@@ -1,0 +1,98 @@
+# Render settings for the film pipeline and the profiles used to test waiting times.
+#
+# Every `est_seconds*` value is a rough guess for an L40. Run the benchmark
+# (`python -m benchmark.run_benchmark`) and pass its results file to the planner
+# to replace them with measured numbers.
+
+film:
+  acts: 6
+  shots_per_act: 6
+  shot_seconds: 5
+  # How long a viewer is expected to spend on each choice. Act N's shots can
+  # start rendering once act N is locked, so this sets how much GPU time is
+  # available during play.
+  seconds_per_choice: 90
+
+keyframe:
+  backend: diffusers_t2i
+  pipeline: FluxPipeline
+  model_id: black-forest-labs/FLUX.1-schnell
+  dtype: bfloat16
+  width: 832
+  height: 480
+  steps: 4
+  guidance: 0.0
+  extra_kwargs:
+    max_sequence_length: 256
+  est_seconds_per_image: 2
+
+render_types:
+  # A slow camera move over the keyframe. Almost free, used to fit tight budgets.
+  pan:
+    backend: pan
+    width: 832
+    height: 480
+    fps: 24
+    zoom: 1.15
+    est_seconds_per_shot: 2
+
+  # Fast image-to-video model, used for most shots.
+  standard:
+    backend: diffusers_i2v
+    pipeline: LTXConditionPipeline
+    call_style: ltx_condition
+    model_id: Lightricks/LTX-Video-0.9.7-distilled
+    dtype: bfloat16
+    width: 768
+    height: 512
+    fps: 24
+    frame_multiple: 8
+    steps: 8
+    guidance: 1.0
+    extra_kwargs:
+      decode_timestep: 0.05
+      image_cond_noise_scale: 0.025
+    vae_tiling: true
+    cpu_offload: false
+    est_seconds_per_shot: 25
+
+  # Higher quality image-to-video model, used for the most important shots.
+  # 40 steps without a distillation LoRA is slow (minutes per shot). To try a
+  # 4-step distillation LoRA, fill in `lora` and set steps: 4, guidance: 1.0.
+  hero:
+    backend: diffusers_i2v
+    pipeline: WanImageToVideoPipeline
+    call_style: image
+    model_id: Wan-AI/Wan2.2-I2V-A14B-Diffusers
+    dtype: bfloat16
+    width: 832
+    height: 480
+    fps: 16
+    frame_multiple: 4
+    steps: 40
+    guidance: 3.5
+    lora: null
+    # lora:
+    #   repo: <huggingface repo of the LoRA>
+    #   weight_name: <safetensors file in that repo>
+    #   scale: 1.0
+    vae_tiling: false
+    cpu_offload: true
+    est_seconds_per_shot: 600
+
+finish:
+  # Stitching, music and narration mix, optional upscale and interpolation.
+  est_seconds: 60
+
+# target_wait_minutes: time from the viewer's last choice to a finished film.
+# max_hero_shots caps how many shots may use the hero model.
+profiles:
+  fast:
+    target_wait_minutes: 3
+    max_hero_shots: 0
+  balanced:
+    target_wait_minutes: 20
+    max_hero_shots: 8
+  quality:
+    target_wait_minutes: 60
+    max_hero_shots: 36

@@ -1,0 +1,29 @@
+[project]
+name = "bvg"
+version = "0.1.0"
+description = "Branching story to personalized AI film, rendered on one GPU"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "pillow",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+# GPU stack for the benchmark and the render server. Install torch for your CUDA version first.
+gpu = [
+    "torch",
+    "diffusers>=0.35",
+    "transformers",
+    "accelerate",
+    "sentencepiece",
+    "peft",
+    "ftfy",
+]
+dev = ["pytest"]
+
+[tool.setuptools]
+packages = ["bvg", "bvg.renderers", "benchmark"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
