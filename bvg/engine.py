@@ -78,14 +78,34 @@ class Engine:
         self.width, self.height, self.fps = film["width"], film["height"], film["fps"]
         self.shot_seconds = film["shot_seconds"]
         self.offload_all = config.get("server", {}).get("offload_all", True)
+        self.swap = config.get("server", {}).get("swap_models", False)
         self._keyframe = None
         self._shot_renderers: dict = {}
+        self._on_gpu = None
 
     def _settings(self, stage: str) -> dict:
         settings = stage_settings(self.config, stage)
-        if self.offload_all and settings.get("backend") != "pan":
+        if settings.get("backend") == "pan" or settings.get("cpu_offload"):
+            return settings
+        if self.swap:
+            settings["device"] = "cpu"
+        elif self.offload_all:
             settings["cpu_offload"] = True
         return settings
+
+    def _to_gpu(self, renderer) -> None:
+        """With swap_models on, keep one pipeline on the GPU and park the others in host RAM."""
+        if not self.swap or renderer is self._on_gpu:
+            return
+        import torch
+
+        if self._on_gpu is not None:
+            self._on_gpu.pipe.to("cpu")
+            self._on_gpu = None
+            torch.cuda.empty_cache()
+        if not renderer.settings.get("cpu_offload"):  # offloaded pipelines move their own weights
+            renderer.pipe.to("cuda")
+            self._on_gpu = renderer
 
     def load(self, render_types: set[str]) -> None:
         """Load the keyframe model and the shot models a session needs, once."""
@@ -102,6 +122,7 @@ class Engine:
     def keyframe(self, prompt: str, seed: int) -> Image.Image:
         if self.mock:
             return placeholder_keyframe(prompt, self.width, self.height, seed)
+        self._to_gpu(self._keyframe)
         return fit(self._keyframe.render(prompt, seed=seed), self.width, self.height)
 
     def shot(self, render_type: str, image: Image.Image, prompt: str, narration: str, seed: int, out: Path) -> None:
@@ -111,6 +132,7 @@ class Engine:
             renderer, src_fps = PanRenderer(settings), self.fps
         else:
             renderer = self._shot_renderers[render_type]
+            self._to_gpu(renderer)
             src_fps = renderer.fps
         frames = renderer.render(image, prompt, self.shot_seconds, seed=seed)
         frames = [f if isinstance(f, Image.Image) else Image.fromarray(np.asarray(f)) for f in frames]

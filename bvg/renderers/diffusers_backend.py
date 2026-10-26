@@ -30,7 +30,7 @@ def _load_pipeline(settings: dict):
     if settings.get("cpu_offload"):
         pipe.enable_model_cpu_offload()
     else:
-        pipe.to("cuda")
+        pipe.to(settings.get("device", "cuda"))
     return pipe
 
 

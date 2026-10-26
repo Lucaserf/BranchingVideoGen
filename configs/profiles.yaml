@@ -18,9 +18,13 @@ film:
   fps: 24
 
 # Render server (bvg.server). Both the keyframe and the video model are kept
-# loaded; with offload on they share the GPU by moving weights in on demand
-# (FLUX.1-schnell peaks at 32 GB and LTX-Video at 38.5 GB, too much together).
+# loaded, but FLUX.1-schnell (32 GB peak) and LTX-Video (38.5 GB) don't fit on the
+# GPU together. swap_models keeps them in host RAM and moves the one a job needs
+# onto the GPU, so weights only move when the job type changes. offload_all
+# (used when swap_models is off) offloads per call instead: on the L40 that made
+# keyframes 23 s instead of 1.3 s and LTX shots 50-80 s instead of 20 s.
 server:
+  swap_models: true
   offload_all: true
   idle_lease_minutes: 15
   outputs: outputs/sessions
