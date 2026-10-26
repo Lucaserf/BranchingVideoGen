@@ -22,10 +22,14 @@ gpu = [
     "peft",
     "ftfy",
 ]
-dev = ["pytest"]
+server = ["fastapi", "uvicorn"]
+dev = ["pytest", "httpx"]
 
 [tool.setuptools]
 packages = ["bvg", "bvg.renderers", "benchmark"]
+
+[tool.setuptools.package-data]
+bvg = ["static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

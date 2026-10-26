@@ -8,6 +8,37 @@ The design and the options considered are in the project doc "Branching story vi
 
 This first piece measures what the L40 can actually render and plans each film around a target waiting time. The story engine, GPU server and web app come next.
 
+## Demo
+
+A playable end-to-end demo: pick a look, make six choices, and watch the film develop while you play.
+
+```bash
+pip install -e ".[server]"
+python -m bvg.server --mock                          # any machine: placeholder stills and pans
+python -m bvg.server --host 0.0.0.0 --preload        # on the L40, real models
+```
+
+Open http://localhost:8000 (on the server, forward the port: `ssh -L 8000:localhost:8000 <server>`). To play without a browser and get a film at the end: `python -m bvg.demo_play --length short`.
+
+How it works:
+
+- **Story** (`bvg/story.py`): six fixed acts of the hero's journey, three options per act plus "write your own". Each act has six shot templates that the choices fill in, with a narration line per shot. Each option also moves a four-axis value fingerprint (courage, empathy, curiosity, order).
+- **Server** (`bvg/server.py`): FastAPI plus one GPU worker thread. One viewer holds the GPU at a time (released when the film is done or after 15 idle minutes). When an act is locked its keyframes render first, so stills appear within seconds, then its video shots. The planner decides at the start which shots are video and which are pans.
+- **Film** (`bvg/engine.py`): every shot is cropped to 768x512 at 24 fps with its narration burned in as a caption, then the shots are joined with ffmpeg.
+
+Choices made for the demo (all easy to change):
+
+| Decision | Choice | Why |
+| --- | --- | --- |
+| Keyframes | FLUX.1-schnell, 768x512 | 1.3 s per image on the L40 |
+| Video | LTX-Video 0.9.7 distilled | 20 s per 5 s shot, the only measured model fast enough for every profile |
+| Hero shots | Effectively off | Wan 2.2 A14B took 1455 s per shot; the planner only fits 2 in `quality` |
+| GPU sharing | Both models loaded with CPU offload | FLUX (32 GB) and LTX (38.5 GB) don't fit in 48 GB together, and reloading per act would take minutes |
+| Story text | Templates, no LLM | Works offline and keeps the GPU for video; an LLM can rewrite shot prompts later |
+| Sound | Captions only | Narration voice and music are the next step |
+| Character consistency | None yet | Each shot is drawn from the prompt alone, so the hero will change look between shots |
+| Film length | Full (36 shots, 3 min) or short (18 shots, 90 s) | Short makes testing faster |
+
 ## Layout
 
 - `configs/profiles.yaml`: models, resolutions and steps for each render type, plus the `fast`, `balanced` and `quality` waiting-time profiles.
