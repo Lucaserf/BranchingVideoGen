@@ -1,4 +1,4 @@
-"""Keyframe (text-to-image) and shot (image-to-video) renderers built on diffusers pipelines.
+"""Keyframe (text-to-image, image edit) and shot (image-to-video) renderers built on diffusers pipelines.
 
 Model ids, pipeline classes and call arguments all come from configs/profiles.yaml, so
 swapping a model is a config change. torch and diffusers are imported lazily so the
@@ -90,6 +90,25 @@ class ImageToVideoRenderer:
         else:
             kwargs["image"] = image
         return self.pipe(**kwargs).frames[0]
+
+    def unload(self) -> None:
+        _unload(self.pipe)
+        self.pipe = None
+
+
+class EditRenderer:
+    """Image edit (e.g. FLUX.1 Kontext, Qwen-Image-Edit): draws a scene around a reference photo."""
+
+    def __init__(self, settings: dict):
+        self.settings = settings
+        self.pipe = _load_pipeline(settings)
+
+    def render(self, reference: Image.Image, prompt: str, seed: int = 0) -> Image.Image:
+        s = self.settings
+        guidance = {s.get("guidance_arg", "guidance_scale"): s["guidance"]}
+        return self.pipe(image=reference.convert("RGB"), prompt=prompt, width=s["width"], height=s["height"],
+                         num_inference_steps=s["steps"], generator=_generator(seed), **guidance,
+                         **s.get("extra_kwargs", {})).images[0]
 
     def unload(self) -> None:
         _unload(self.pipe)

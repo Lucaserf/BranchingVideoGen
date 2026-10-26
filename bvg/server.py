@@ -5,12 +5,20 @@
 
 One viewer holds the GPU at a time. Each choice locks an act: its keyframes are
 rendered first (so the viewer sees stills right away), then its video shots, in
-the order the planner chose. After the last act the shots are stitched into the film.
+the order the planner chose. Narration is spoken on the CPU in parallel. After the
+last act the shots are stitched, and narration and music are mixed in.
+
+Each film can pick its own models (image, video, quality shots, photo edit), a
+narration voice, music, and a photo of the protagonist.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
+import copy
+import importlib.util
+import io
 import itertools
 import json
 import logging
@@ -19,6 +27,7 @@ import threading
 import time
 import uuid
 import zlib
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -27,9 +36,13 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from bvg.config import load_config, load_costs, load_profile
+import numpy as np
+from PIL import Image
+
+from bvg import audio
+from bvg.config import Costs, load_config, load_costs, load_profile
 from bvg.engine import Engine
-from bvg.models import apply_overrides
+from bvg.models import ModelPolicyError, apply_overrides, models_by_kind, select_model, stage_settings
 from bvg.planner import Shot, plan_film
 from bvg.story import ACTS, STYLES, StoryState, acts_public
 
@@ -39,6 +52,8 @@ STATIC = Path(__file__).resolve().parent / "static"
 # Which shots of each act a short film keeps.
 LENGTHS = {"full": (0, 1, 2, 3, 4, 5), "short": (0, 3, 5)}
 KEYFRAME, VIDEO, FINISH = 0, 1, 2  # job priorities: lower runs first
+MODEL_STAGES = ("keyframe", "standard", "hero", "photo")
+MAX_PHOTO_BYTES = 12 * 1024 * 1024
 
 
 @dataclass
@@ -47,6 +62,7 @@ class ShotState:
     index: int
     render_type: str
     prompt: str = ""
+    photo_prompt: str | None = None
     narration: str = ""
     status: str = "waiting"  # waiting -> queued -> keyframe -> rendering -> done | failed
     seconds: float | None = None
@@ -60,6 +76,13 @@ class Session:
     length: str
     shots: dict[tuple[int, int], ShotState]
     dir: Path
+    settings: dict[str, dict]  # per stage, from this film's model picks
+    costs: Costs
+    voice: str | None = None  # None: no narration
+    music: bool = True
+    captions: bool = True
+    photo: Image.Image | None = None
+    narration_jobs: dict[tuple[int, int], Future] = field(default_factory=dict)
     created: float = field(default_factory=time.time)
     last_seen: float = field(default_factory=time.time)
     last_choice_at: float | None = None
@@ -81,13 +104,23 @@ class SessionIn(BaseModel):
     style: str = "animated"
     profile: str = "fast"
     length: str = "full"
+    models: dict[str, str] = {}  # stage -> catalog model, for this film only
+    voice: str | None = None  # a narration voice id, or None / "off" for none
+    music: bool = True
+    captions: bool = True
+    photo: str | None = None  # data URL of the protagonist's photo
+    photo_consent: bool = False
 
 
 class App:
     def __init__(self, config: dict, engine: Engine, bench: str | None):
         self.config = config
         self.engine = engine
+        self.bench = bench
         self.costs = load_costs(config, bench)
+        self.audio = config.get("audio", {})
+        self.narrator = audio.Narrator(self.audio.get("narration", "kokoro"), mock=engine.mock)
+        self.cpu = ThreadPoolExecutor(max_workers=1, thread_name_prefix="narration")
         server = config.get("server", {})
         self.idle_seconds = server.get("idle_lease_minutes", 15) * 60
         self.outputs = Path(server.get("outputs", "outputs/sessions"))
@@ -116,19 +149,61 @@ class App:
             busy = self.active()
             if busy:
                 raise HTTPException(409, {"busy": True, "eta_seconds": self.eta(busy)})
+            settings, costs = self._film_models(body.models)
+            photo = self._photo(body)
+            voice = None if body.voice in (None, "", "off") else body.voice
+            if voice is not None and voice not in audio.VOICES:
+                raise HTTPException(400, f"unknown voice {voice!r}")
             profile = load_profile(self.config, body.profile)
             keep = LENGTHS[body.length]
             planned = [Shot(act=a, index=i, priority=t.priority)
                        for a, act in enumerate(ACTS) for i, t in enumerate(act.shots) if i in keep]
-            plan = plan_film(planned, self.costs, profile, self.config["film"]["seconds_per_choice"])
+            plan = plan_film(planned, costs, profile, self.config["film"]["seconds_per_choice"])
             sid = uuid.uuid4().hex[:10]
             session = Session(id=sid, story=StoryState(style=body.style), profile=body.profile, length=body.length,
                               shots={(s.act, s.index): ShotState(s.act, s.index, s.render_type) for s in plan.shots},
-                              dir=self.outputs / sid)
+                              dir=self.outputs / sid, settings=settings, costs=costs, voice=voice,
+                              music=body.music, captions=body.captions, photo=photo)
             session.dir.mkdir(parents=True, exist_ok=True)
+            if photo is not None:
+                photo.save(session.dir / "photo.png")
             self.sessions[sid] = session
-            log.info("session %s: %s, %s, %s, plan %s", sid, body.style, body.profile, body.length, plan.counts())
+            log.info("session %s: %s, %s, %s, models %s, voice %s, photo %s, plan %s", sid, body.style,
+                     body.profile, body.length, {k: v.get("model_name") for k, v in settings.items()}, voice,
+                     photo is not None, plan.counts())
             return session
+
+    def _film_models(self, picks: dict[str, str]) -> tuple[dict[str, dict], Costs]:
+        """Settings per stage and planning costs for this film's model picks."""
+        config = copy.deepcopy(self.config)
+        try:
+            for stage, model in picks.items():
+                if stage not in MODEL_STAGES:
+                    raise KeyError(f"unknown stage {stage!r}")
+                select_model(config, stage, model)
+            settings = {stage: stage_settings(config, stage) for stage in MODEL_STAGES}
+        except (KeyError, ValueError, ModelPolicyError) as e:
+            raise HTTPException(400, str(e).strip("'\""))
+        settings["pan"] = stage_settings(config, "pan")
+        return settings, load_costs(config, self.bench)
+
+    @staticmethod
+    def _photo(body: SessionIn) -> Image.Image | None:
+        if not body.photo:
+            return None
+        if not body.photo_consent:
+            raise HTTPException(400, "confirm the photo is of you, or that you have the person's permission")
+        data = body.photo.split(",", 1)[-1]
+        if len(data) > MAX_PHOTO_BYTES * 4 // 3:
+            raise HTTPException(400, "photo too large")
+        try:
+            image = Image.open(io.BytesIO(base64.b64decode(data)))
+            image.load()
+        except Exception:
+            raise HTTPException(400, "could not read the photo")
+        image = image.convert("RGB")
+        image.thumbnail((1024, 1024))
+        return image
 
     def get(self, sid: str) -> Session:
         session = self.sessions.get(sid)
@@ -153,6 +228,10 @@ class App:
                 if shot is None:
                     continue  # not part of a short film
                 shot.prompt, shot.narration, shot.status = spec["prompt"], spec["narration"], "queued"
+                shot.photo_prompt = spec["photo_prompt"]
+                if session.voice:
+                    session.narration_jobs[(act, shot.index)] = self.cpu.submit(
+                        self.narrator.speak, shot.narration, session.voice)
                 self.jobs.put((KEYFRAME, next(self.seq), sid, act, shot.index))
                 self.jobs.put((VIDEO, next(self.seq), sid, act, shot.index))
             if session.story.act == len(ACTS):
@@ -165,10 +244,10 @@ class App:
         left = 0.0
         for shot in session.shots.values():
             if shot.status in ("waiting", "queued"):
-                left += self.costs.keyframe
+                left += session.costs.keyframe
             if shot.status != "done":
-                left += self.costs.shot[shot.render_type]
-        return left + (0 if session.finished else self.costs.finish)
+                left += session.costs.shot[shot.render_type]
+        return left + (0 if session.finished else session.costs.finish)
 
     def public(self, session: Session) -> dict:
         def url(name):
@@ -184,6 +263,8 @@ class App:
         return {
             "id": session.id, "style": session.story.style, "profile": session.profile, "length": session.length,
             "act": session.story.act, "choices": session.story.choices, "values": session.story.values,
+            "models": {k: v.get("model_name") for k, v in session.settings.items() if k != "pan"},
+            "voice": session.voice, "music": session.music, "photo": session.photo is not None,
             "shots": shots, "shots_done": done, "shots_total": len(session.shots),
             "film_status": session.film_status, "film": url("film.mp4") if session.film_status == "done" else None,
             "eta_seconds": round(self.eta(session)),
@@ -194,6 +275,21 @@ class App:
 
     def _save(self, session: Session) -> None:
         (session.dir / "session.json").write_text(json.dumps(self.public(session), indent=2))
+
+    def _soundtrack(self, session: Session, done: list[tuple[int, int]]) -> np.ndarray:
+        shot_seconds = self.config["film"]["shot_seconds"]
+        seconds = len(done) * shot_seconds
+        lines = []
+        for n, key in enumerate(done):
+            job = session.narration_jobs.get(key)
+            if job is not None:
+                try:
+                    lines.append((n * shot_seconds + 0.4, job.result()))
+                except Exception:
+                    log.exception("narration failed for shot %s", key)
+        music = (audio.music_bed(seconds, self.audio.get("music_dir", "assets/music"),
+                                 seed=zlib.crc32(session.id.encode())) if session.music else None)
+        return audio.mix(seconds, lines, music, self.audio.get("music_volume", 0.25))
 
     # --- GPU worker -------------------------------------------------------
 
@@ -216,18 +312,21 @@ class App:
             self._save(session)
 
     def _render(self, session: Session, kind: int, shot: ShotState) -> None:
-        self.engine.load({s.render_type for s in session.shots.values()} - {"pan"})
         seed = zlib.crc32(f"{session.id}:{shot.act}:{shot.index}".encode())
         kf_path = session.dir / f"kf_{shot.act}_{shot.index}.png"
         start = time.time()
         if kind == KEYFRAME:
             shot.status = "keyframe"
-            self.engine.keyframe(shot.prompt, seed).save(kf_path)
+            if session.photo is not None and shot.photo_prompt:
+                image = self.engine.keyframe_from_photo(session.settings["photo"], session.photo,
+                                                        shot.photo_prompt, seed)
+            else:
+                image = self.engine.keyframe(session.settings["keyframe"], shot.prompt, seed)
+            image.save(kf_path)
             shot.status = "rendering"
         else:
-            from PIL import Image
-
-            self.engine.shot(shot.render_type, Image.open(kf_path), shot.prompt, shot.narration, seed,
+            self.engine.shot(session.settings[shot.render_type], Image.open(kf_path), shot.prompt,
+                             shot.narration if session.captions else None, seed,
                              session.dir / f"shot_{shot.act}_{shot.index}.mp4")
             shot.status, shot.seconds = "done", round(time.time() - start, 1)
             log.info("session %s: shot %d.%d %s in %.1fs", session.id, shot.act + 1, shot.index + 1,
@@ -235,11 +334,16 @@ class App:
 
     def _finish(self, session: Session) -> None:
         session.film_status = "stitching"
-        paths = [session.dir / f"shot_{a}_{i}.mp4" for (a, i), s in sorted(session.shots.items())
-                 if s.status == "done"]
-        if not paths:
+        done = [(a, i) for (a, i), s in sorted(session.shots.items()) if s.status == "done"]
+        if not done:
             raise RuntimeError("no shot rendered")
-        self.engine.stitch(paths, session.dir / "film.mp4")
+        film = session.dir / "film.mp4"
+        silent = session.dir / "film_silent.mp4" if session.voice or session.music else film
+        self.engine.stitch([session.dir / f"shot_{a}_{i}.mp4" for a, i in done], silent)
+        if silent != film:
+            wav = session.dir / "audio.wav"
+            audio.write_wav(self._soundtrack(session, done), wav)
+            self.engine.add_audio(silent, wav, film)
         session.film_status, session.film_ready_at = "done", time.time()
         log.info("session %s: film ready %.0fs after the last choice", session.id,
                  session.film_ready_at - session.last_choice_at)
@@ -251,7 +355,16 @@ def build(app_state: App) -> FastAPI:
     @api.get("/api/meta")
     def meta():
         busy = app_state.active()
+        config = app_state.config
+        defaults = {stage: (config.get(stage) if stage in ("keyframe", "photo") else config["render_types"][stage])
+                    .get("model") for stage in MODEL_STAGES}
+        narration = app_state.audio.get("narration", "kokoro")
+        narration_ok = app_state.engine.mock or (narration != "none" and importlib.util.find_spec("kokoro") is not None)
         return {"styles": {k: v["label"] for k, v in STYLES.items()}, "acts": acts_public(),
+                "models": models_by_kind(config), "default_models": defaults,
+                "voices": audio.VOICES if narration_ok else {},
+                "default_voice": app_state.audio.get("voice", "af_heart") if narration_ok else None,
+                "music_files": [p.name for p in audio.music_files(app_state.audio.get("music_dir", "assets/music"))],
                 "profiles": {k: v["target_wait_minutes"] for k, v in app_state.config["profiles"].items()},
                 "lengths": list(LENGTHS), "busy": bool(busy), "eta_seconds": app_state.eta(busy) if busy else 0,
                 "mock": app_state.engine.mock}
@@ -296,7 +409,7 @@ def main() -> None:
     config = apply_overrides(load_config(args.config) if args.config else load_config(), args.model)
     engine = Engine(config, mock=args.mock)
     if args.preload:
-        engine.load({"standard"})
+        engine.preload([stage_settings(config, "keyframe"), stage_settings(config, "standard")])
     import uvicorn
 
     uvicorn.run(build(App(config, engine, args.bench)), host=args.host, port=args.port)

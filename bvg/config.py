@@ -53,10 +53,16 @@ def load_costs(config: dict, bench_path: str | Path | None = None) -> Costs:
         with open(bench_path) as f:
             bench = json.load(f)
         results = bench.get("results", {})
-        if "keyframe" in results:
+        measured_with = bench.get("models", {})
+
+        def same_model(stage: str, section: dict) -> bool:
+            # A measurement only counts for the model it was taken with.
+            return stage not in measured_with or measured_with[stage] == section.get("model")
+
+        if "keyframe" in results and same_model("keyframe", config["keyframe"]):
             keyframe = results["keyframe"]["mean_seconds"]
         for name in shot:
-            if name in results:
+            if name in results and same_model(name, config["render_types"][name]):
                 shot[name] = results[name]["mean_seconds"]
 
     return Costs(keyframe=keyframe, shot=shot, finish=finish)

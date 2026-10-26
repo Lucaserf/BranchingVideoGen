@@ -70,6 +70,18 @@ render_types:
     # `balanced`; needs a 4-step distillation LoRA to be useful.
     est_seconds_per_shot: 1455
 
+# Keyframes for shots with the protagonist when the viewer uploads a photo: an
+# image-edit model redraws the scene with that person in it.
+photo:
+  model: flux1-kontext-dev
+
+# Audio mixed into the film: a narration voice per shot and a music bed.
+audio:
+  narration: kokoro          # kokoro (small TTS, runs on the CPU) or none
+  voice: af_heart            # default voice; the app lets the viewer pick
+  music_dir: assets/music    # mp3/wav files to use as music; a soft synthesized pad when empty
+  music_volume: 0.25         # relative to narration, lowered further while someone speaks
+
 finish:
   # Stitching, music and narration mix, optional upscale and interpolation.
   est_seconds: 60
@@ -87,12 +99,15 @@ profiles:
     target_wait_minutes: 60
     max_hero_shots: 36
 
-# Model catalog. `kind` is t2i (keyframes) or i2v (shots). `permissive` means the
+# Model catalog. `kind` is t2i (keyframes), i2v (shots) or edit (keyframes that
+# put the viewer's photo into the scene). `est_seconds` is per image or per 5 s
+# shot on the L40; it is used for planning when a model is picked per film. `permissive` means the
 # license allows commercial use with no field-of-use, revenue or territory limits.
 # License notes are a summary; check the model card before shipping.
 models:
   # --- keyframes (text to image) ---
   flux1-schnell:
+    est_seconds: 1.3  # measured
     kind: t2i
     license: Apache-2.0
     permissive: true
@@ -107,6 +122,7 @@ models:
       max_sequence_length: 256
 
   qwen-image:
+    est_seconds: 25  # guess
     kind: t2i
     license: Apache-2.0
     permissive: true
@@ -122,6 +138,7 @@ models:
       negative_prompt: " "
 
   flux1-dev:
+    est_seconds: 10  # guess
     kind: t2i
     license: FLUX.1 [dev] Non-Commercial
     permissive: false
@@ -135,6 +152,7 @@ models:
 
   # --- shots (image to video) ---
   wan2.2-i2v-a14b:
+    est_seconds: 1455  # measured, 40 steps with offload
     kind: i2v
     license: Apache-2.0
     permissive: true
@@ -152,6 +170,7 @@ models:
   # Measured on the L40 with cpu_offload on: 645 s per shot, 15.9 GB peak VRAM.
   # It fits in VRAM, so try cpu_offload: false, 832x480 or fewer steps for speed.
   wan2.2-ti2v-5b:
+    est_seconds: 645  # measured, 50 steps with offload
     kind: i2v
     license: Apache-2.0
     permissive: true
@@ -168,6 +187,7 @@ models:
     vae_tiling: true
 
   wan2.1-i2v-14b-480p:
+    est_seconds: 900  # guess
     kind: i2v
     license: Apache-2.0
     permissive: true
@@ -183,6 +203,7 @@ models:
     guidance: 5.0
 
   ltx-0.9.7-distilled:
+    est_seconds: 20  # measured
     kind: i2v
     license: LTX-Video Open Weights (paid license above a revenue threshold)
     permissive: false
@@ -202,6 +223,7 @@ models:
     vae_tiling: true
 
   hunyuanvideo-i2v:
+    est_seconds: 600  # guess
     kind: i2v
     license: Tencent Hunyuan Community (excludes EU, UK, South Korea)
     permissive: false
@@ -217,3 +239,33 @@ models:
     guidance: 1.0
     vae_tiling: true
     cpu_offload: true
+
+  # --- keyframes from the viewer's photo (image edit) ---
+  flux1-kontext-dev:
+    est_seconds: 10  # guess
+    kind: edit
+    license: FLUX.1 [dev] Non-Commercial
+    permissive: false
+    pipeline: FluxKontextPipeline
+    model_id: black-forest-labs/FLUX.1-Kontext-dev
+    dtype: bfloat16
+    width: 768
+    height: 512
+    steps: 28
+    guidance: 2.5
+
+  qwen-image-edit-2509:
+    est_seconds: 60  # guess
+    kind: edit
+    license: Apache-2.0
+    permissive: true
+    pipeline: QwenImageEditPlusPipeline
+    model_id: Qwen/Qwen-Image-Edit-2509
+    dtype: bfloat16
+    width: 768
+    height: 512
+    steps: 40
+    guidance: 4.0
+    guidance_arg: true_cfg_scale
+    extra_kwargs:
+      negative_prompt: " "

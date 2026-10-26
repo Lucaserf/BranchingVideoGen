@@ -20,6 +20,14 @@ python -m bvg.server --host 0.0.0.0 --preload        # on the L40, real models
 
 Open http://localhost:8000 (on the server, forward the port: `ssh -L 8000:localhost:8000 <server>`). To play without a browser and get a film at the end: `python -m bvg.demo_play --length short`.
 
+Before starting, the viewer can also:
+
+- **Upload a photo of the protagonist.** Every keyframe that shows the hero is then drawn by an image-edit model (FLUX.1 Kontext by default, Qwen-Image-Edit as an Apache-2.0 alternative) from that photo, so the hero keeps that face. The app asks the viewer to confirm the photo is of them or that they have the person's permission.
+- **Pick the sound.** A narration voice (Kokoro, a small TTS model that runs on the CPU while the GPU renders video), music, and captions, each optional. Music comes from files in `assets/music/` (mp3, wav, ogg, flac, m4a), or a soft synthesized pad when the folder is empty. It dips while the narrator speaks.
+- **Pick the models** for stills, video, quality shots and the photo edit, from the catalog in `configs/profiles.yaml`. Planning uses each model's `est_seconds`; a model loads the first time a film uses it, and up to `server.max_loaded_models` (default 3) stay in host RAM.
+
+Install the narration voice with `pip install -e ".[audio]"`.
+
 How it works:
 
 - **Story** (`bvg/story.py`): six fixed acts of the hero's journey, three options per act plus "write your own". Each act has six shot templates that the choices fill in, with a narration line per shot. Each option also moves a four-axis value fingerprint (courage, empathy, curiosity, order).
@@ -35,8 +43,8 @@ Choices made for the demo (all easy to change):
 | Hero shots | Effectively off | Wan 2.2 A14B took 1455 s per shot; the planner only fits 2 in `quality` |
 | GPU sharing | Both models loaded with CPU offload | FLUX (32 GB) and LTX (38.5 GB) don't fit in 48 GB together, and reloading per act would take minutes |
 | Story text | Templates, no LLM | Works offline and keeps the GPU for video; an LLM can rewrite shot prompts later |
-| Sound | Captions only | Narration voice and music are the next step |
-| Character consistency | None yet | Each shot is drawn from the prompt alone, so the hero will change look between shots |
+| Sound | Kokoro narration on the CPU, music files or a synthesized pad | Keeps the GPU free for video; no music model yet |
+| Character consistency | Only with an uploaded photo | Without a photo each shot is drawn from the prompt alone, so the hero changes look between shots |
 | Film length | Full (36 shots, 3 min) or short (18 shots, 90 s) | Short makes testing faster |
 
 ## Layout

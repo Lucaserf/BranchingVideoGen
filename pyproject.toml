@@ -23,6 +23,8 @@ gpu = [
     "ftfy",
 ]
 server = ["fastapi", "uvicorn"]
+# Narration voice (Kokoro TTS, runs on the CPU). espeak-ng from the OS package manager improves rare words.
+audio = ["kokoro>=0.9"]
 dev = ["pytest", "httpx"]
 
 [tool.setuptools]

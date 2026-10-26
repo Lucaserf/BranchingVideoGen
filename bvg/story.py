@@ -261,8 +261,12 @@ class StoryState:
         """Prompt and narration for each shot of a locked act."""
         style = STYLES[self.style]["prompt"]
         spoken = {**self.fields, "hero": self.fields["name"], "ally": self.fields["ally_name"]}
+        # With an uploaded photo, shots showing the hero are drawn by an image-edit model from that photo.
+        pictured = {**self.fields, "hero": f"the person from the reference photo, as {self.fields.get('hero', 'the hero')}"}
         return [{"act": act_index, "index": i, "priority": t.priority,
                  "prompt": f"{_fill(t.prompt, self.fields)}, {style}",
+                 "photo_prompt": (f"{_fill(t.prompt, pictured)}. Keep the same face and identity, {style}"
+                                  if "{hero}" in t.prompt else None),
                  "narration": _capitalize(_fill(t.narration, spoken))}
                 for i, t in enumerate(ACTS[act_index].shots)]
 

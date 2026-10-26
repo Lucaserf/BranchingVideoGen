@@ -40,6 +40,14 @@
   video { width: 100%; border-radius: 10px; background: #000; }
   .values div { display: grid; grid-template-columns: 90px 1fr 24px; gap: 8px; align-items: center; margin: 4px 0; }
   .hidden { display: none; }
+  select { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px;
+    padding: 10px; font: inherit; width: 100%; }
+  label.field { display: block; }
+  label.field span { display: block; color: var(--muted); font-size: 14px; margin-bottom: 4px; }
+  .check { display: flex; gap: 8px; align-items: center; }
+  details summary { cursor: pointer; font-weight: 600; font-size: 18px; }
+  #models { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+  #photo-preview { width: 120px; height: 120px; object-fit: cover; border-radius: 10px; border: 1px solid var(--line); }
   .error { color: var(--bad); }
 </style>
 </head>
@@ -62,6 +70,35 @@
       <h2>Rendering profile</h2>
       <p class="muted">How long you are willing to wait after your last choice. Longer waits buy more real video shots and fewer camera pans over stills.</p>
       <div class="grid" id="profiles"></div>
+    </section>
+    <section>
+      <h2>Your protagonist <span class="muted" style="font-weight:400;font-size:16px">(optional)</span></h2>
+      <p class="muted">Upload a photo and the hero of every shot will have that face.</p>
+      <div class="row">
+        <img id="photo-preview" class="hidden" alt="">
+        <div>
+          <input type="file" id="photo" accept="image/*">
+          <label class="check" style="margin-top:8px"><input type="checkbox" id="photo-consent">
+            This is me, or I have this person's permission</label>
+          <button class="card hidden" id="photo-clear" style="margin-top:8px;padding:6px 12px">Remove photo</button>
+        </div>
+      </div>
+    </section>
+    <section>
+      <h2>Sound</h2>
+      <div class="grid">
+        <label class="field"><span>Narration voice</span><select id="voice"></select></label>
+        <div class="card"><label class="check"><input type="checkbox" id="music" checked> Music</label>
+          <label class="check"><input type="checkbox" id="captions" checked> Captions</label>
+          <div class="muted" id="music-note" style="font-size:14px"></div></div>
+      </div>
+    </section>
+    <section>
+      <details>
+        <summary>Models</summary>
+        <p class="muted">A model loads the first time a film uses it, which can take a few minutes. Times are per image or per 5-second shot on the L40.</p>
+        <div class="grid" id="models"></div>
+      </details>
     </section>
     <section class="row">
       <button class="primary" id="begin">Begin</button>
@@ -102,6 +139,9 @@
 const $ = (id) => document.getElementById(id);
 const esc = (t) => String(t).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 let meta = null, session = null, pick = { style: "animated", length: "full", profile: "fast" }, pollTimer = null;
+let photo = null;
+const STAGES = [["keyframe", "t2i", "Image model (stills)"], ["standard", "i2v", "Video model"],
+                ["hero", "i2v", "Quality shots model"], ["photo", "edit", "Photo model (your face in the scene)"]];
 
 const store = {
   get() { try { return localStorage.getItem("bvg-session"); } catch { return null; } },
@@ -138,6 +178,16 @@ async function init() {
         (v) => v === "full" ? "36 shots, about 3 minutes" : "18 shots, about 90 seconds");
   cards($("profiles"), Object.entries(meta.profiles).map(([k, m]) => [k, k[0].toUpperCase() + k.slice(1)]), "profile",
         (k) => `Ready about ${meta.profiles[k]} min after your last choice`);
+  $("voice").innerHTML = `<option value="off">No narration</option>` + Object.entries(meta.voices)
+    .map(([id, label]) => `<option value="${id}" ${id === meta.default_voice ? "selected" : ""}>${esc(label)}</option>`).join("");
+  if (!Object.keys(meta.voices).length) $("voice").innerHTML = `<option value="off">Narration not installed on this server</option>`;
+  $("music-note").textContent = meta.music_files.length ? `${meta.music_files.length} music track(s) available`
+                                                        : "Soft synthesized music (add tracks to assets/music)";
+  $("models").innerHTML = STAGES.map(([stage, kind, label]) => `
+    <label class="field"><span>${label}</span><select data-stage="${stage}">${(meta.models[kind] || []).map((m) => `
+      <option value="${m.name}" ${m.name === meta.default_models[stage] ? "selected" : ""}>${esc(m.name)}${
+        m.est_seconds ? ` · ~${m.est_seconds} s` : ""}${m.permissive ? "" : " · restricted license"}</option>`).join("")}
+    </select></label>`).join("");
   if (meta.busy) $("busy").textContent = `Someone else is making a film right now (about ${minutes(meta.eta_seconds)} left).`;
   const saved = store.get();
   if (saved) {
@@ -145,10 +195,40 @@ async function init() {
   }
 }
 
+function loadPhoto(file) {
+  // Shrink on the client so uploads stay small.
+  const img = new Image();
+  img.onload = () => {
+    const scale = Math.min(1, 1024 / Math.max(img.width, img.height));
+    const c = document.createElement("canvas");
+    c.width = Math.round(img.width * scale); c.height = Math.round(img.height * scale);
+    c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+    photo = c.toDataURL("image/jpeg", 0.9);
+    $("photo-preview").src = photo;
+    $("photo-preview").classList.remove("hidden"); $("photo-clear").classList.remove("hidden");
+    URL.revokeObjectURL(img.src);
+  };
+  img.onerror = () => { $("error").textContent = "Could not read that image."; };
+  img.src = URL.createObjectURL(file);
+}
+$("photo").onchange = (e) => { if (e.target.files[0]) loadPhoto(e.target.files[0]); };
+$("photo-clear").onclick = () => {
+  photo = null; $("photo").value = "";
+  $("photo-preview").classList.add("hidden"); $("photo-clear").classList.add("hidden");
+};
+
 $("begin").onclick = async () => {
   $("error").textContent = "";
+  if (photo && !$("photo-consent").checked) {
+    $("error").textContent = "Please confirm the photo is of you, or that you have the person's permission.";
+    return;
+  }
+  const models = {};
+  for (const sel of document.querySelectorAll("#models select")) models[sel.dataset.stage] = sel.value;
+  const body = { ...pick, models, voice: $("voice").value, music: $("music").checked,
+                 captions: $("captions").checked, photo, photo_consent: $("photo-consent").checked };
   try {
-    session = await api("/api/sessions", pick);
+    session = await api("/api/sessions", body);
     store.set(session.id); show(); poll();
   } catch (e) {
     $("error").textContent = e.status === 409
@@ -211,7 +291,9 @@ function render() {
       <div class="card"><strong>Your choices</strong><ol class="muted">${s.choices.map((c) => `<li>${esc(c)}</li>`).join("")}</ol></div>
       <div class="card values"><strong>Your fingerprint</strong>${Object.entries(s.values).map(([k, v]) => `
         <div><span class="muted">${k}</span><div class="bar"><div style="width:${100 * Math.max(0, v) / max}%"></div></div><span>${v}</span></div>`).join("")}
-        <p class="muted">Style: ${meta.styles[s.style]} · ${s.length} · ${s.profile}</p>
+        <p class="muted">Style: ${meta.styles[s.style]} · ${s.length} · ${s.profile}<br>
+          Models: ${esc(s.models.keyframe)}, ${esc(s.models.standard)}${s.photo ? `, ${esc(s.models.photo)} (your photo)` : ""}<br>
+          Sound: ${s.voice ? esc(meta.voices[s.voice] || s.voice) : "no narration"}${s.music ? ", music" : ""}</p>
         <button class="primary" onclick="store.set(null); location.reload()">Make another</button></div>`;
   }
 }
