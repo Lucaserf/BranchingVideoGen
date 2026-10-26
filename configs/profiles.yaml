@@ -22,7 +22,8 @@ model_policy:
 # catalog defaults for that stage.
 keyframe:
   model: flux1-schnell
-  est_seconds_per_image: 2
+  # Measured on the L40: 1.32 s per 832x480 image at 4 steps, 32.3 GB peak VRAM.
+  est_seconds_per_image: 1.3
 
 render_types:
   # A slow camera move over the keyframe. Almost free, used to fit tight budgets.
@@ -46,7 +47,10 @@ render_types:
   hero:
     model: wan2.2-i2v-a14b
     cpu_offload: true
-    est_seconds_per_shot: 600
+    # Measured on the L40: 1455 s per 81-frame shot at 40 steps with offload,
+    # 30.5 GB peak VRAM, about 70 GB host RAM. Too slow for any hero shot in
+    # `balanced`; needs a 4-step distillation LoRA to be useful.
+    est_seconds_per_shot: 1455
 
 finish:
   # Stitching, music and narration mix, optional upscale and interpolation.

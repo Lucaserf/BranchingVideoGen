@@ -75,7 +75,7 @@ Notes from the first L40 run:
 - Wan 2.2 I2V A14B is about 126 GB of weights and needs about 70 GB of host RAM to load, so check free disk and RAM before running `hero`. `--model hero=wan2.2-ti2v-5b` is a smaller stand-in.
 - LTX-Video distilled peaks at 38.5 GB, so only one video model fits in VRAM at a time; the benchmark unloads each type before the next.
 
-Use `--types keyframe,standard` to run a subset. Results are written after each type, so a crash in one model keeps the earlier numbers. The hero model defaults to 40 steps with CPU offload, which is slow. To try a 4-step distillation LoRA, fill in `lora` under `hero` in the config and set `steps: 4`, `guidance: 1.0`.
+Use `--types keyframe,standard` to run a subset. Results are written after each type, so a crash in one model keeps the earlier numbers. The hero model defaults to 40 steps with CPU offload, which measured 1455 s per shot on the L40. To try a 4-step distillation LoRA, fill in `lora` under `hero` in the config and set `steps: 4`, `guidance: 1.0`.
 
 ## Planning a film
 
