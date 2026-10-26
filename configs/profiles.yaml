@@ -1,0 +1,201 @@
+# Render settings for the film pipeline and the profiles used to test waiting times.
+#
+# Every `est_seconds*` value is a rough guess for an L40. Run the benchmark
+# (`python -m benchmark.run_benchmark`) and pass its results file to the planner
+# to replace them with measured numbers.
+
+film:
+  acts: 6
+  shots_per_act: 6
+  shot_seconds: 5
+  # How long a viewer is expected to spend on each choice. Act N's shots can
+  # start rendering once act N is locked, so this sets how much GPU time is
+  # available during play.
+  seconds_per_choice: 90
+
+# When true, selecting a model whose catalog entry is not `permissive` is an error.
+model_policy:
+  permissive_only: false
+
+# Which catalog model each stage uses. Override on the command line with
+# `--model standard=wan2.2-ti2v-5b`. Any key next to `model` overrides the
+# catalog defaults for that stage.
+keyframe:
+  model: flux1-schnell
+  # Measured on the L40: 1.32 s per 832x480 image at 4 steps, 32.3 GB peak VRAM.
+  est_seconds_per_image: 1.3
+
+render_types:
+  # A slow camera move over the keyframe. Almost free, used to fit tight budgets.
+  pan:
+    backend: pan
+    width: 832
+    height: 480
+    fps: 24
+    zoom: 1.15
+    est_seconds_per_shot: 2
+
+  # Fast image-to-video model, used for most shots.
+  standard:
+    model: ltx-0.9.7-distilled
+    # Measured on the L40: 20.0 s per 121-frame shot, 38.5 GB peak VRAM.
+    est_seconds_per_shot: 20
+
+  # Higher quality image-to-video model, used for the most important shots.
+  # 40 steps without a distillation LoRA is slow (minutes per shot). To try a
+  # 4-step distillation LoRA, set `lora` and `steps: 4`, `guidance: 1.0` here.
+  hero:
+    model: wan2.2-i2v-a14b
+    cpu_offload: true
+    # Measured on the L40: 1455 s per 81-frame shot at 40 steps with offload,
+    # 30.5 GB peak VRAM, about 70 GB host RAM. Too slow for any hero shot in
+    # `balanced`; needs a 4-step distillation LoRA to be useful.
+    est_seconds_per_shot: 1455
+
+finish:
+  # Stitching, music and narration mix, optional upscale and interpolation.
+  est_seconds: 60
+
+# target_wait_minutes: time from the viewer's last choice to a finished film.
+# max_hero_shots caps how many shots may use the hero model.
+profiles:
+  fast:
+    target_wait_minutes: 3
+    max_hero_shots: 0
+  balanced:
+    target_wait_minutes: 20
+    max_hero_shots: 8
+  quality:
+    target_wait_minutes: 60
+    max_hero_shots: 36
+
+# Model catalog. `kind` is t2i (keyframes) or i2v (shots). `permissive` means the
+# license allows commercial use with no field-of-use, revenue or territory limits.
+# License notes are a summary; check the model card before shipping.
+models:
+  # --- keyframes (text to image) ---
+  flux1-schnell:
+    kind: t2i
+    license: Apache-2.0
+    permissive: true
+    pipeline: FluxPipeline
+    model_id: black-forest-labs/FLUX.1-schnell
+    dtype: bfloat16
+    width: 832
+    height: 480
+    steps: 4
+    guidance: 0.0
+    extra_kwargs:
+      max_sequence_length: 256
+
+  qwen-image:
+    kind: t2i
+    license: Apache-2.0
+    permissive: true
+    pipeline: QwenImagePipeline
+    model_id: Qwen/Qwen-Image
+    dtype: bfloat16
+    width: 832
+    height: 480
+    steps: 30
+    guidance: 4.0
+    guidance_arg: true_cfg_scale
+    extra_kwargs:
+      negative_prompt: " "
+
+  flux1-dev:
+    kind: t2i
+    license: FLUX.1 [dev] Non-Commercial
+    permissive: false
+    pipeline: FluxPipeline
+    model_id: black-forest-labs/FLUX.1-dev
+    dtype: bfloat16
+    width: 832
+    height: 480
+    steps: 28
+    guidance: 3.5
+
+  # --- shots (image to video) ---
+  wan2.2-i2v-a14b:
+    kind: i2v
+    license: Apache-2.0
+    permissive: true
+    pipeline: WanImageToVideoPipeline
+    call_style: image
+    model_id: Wan-AI/Wan2.2-I2V-A14B-Diffusers
+    dtype: bfloat16
+    width: 832
+    height: 480
+    fps: 16
+    frame_multiple: 4
+    steps: 40
+    guidance: 3.5
+
+  # Measured on the L40 with cpu_offload on: 645 s per shot, 15.9 GB peak VRAM.
+  # It fits in VRAM, so try cpu_offload: false, 832x480 or fewer steps for speed.
+  wan2.2-ti2v-5b:
+    kind: i2v
+    license: Apache-2.0
+    permissive: true
+    pipeline: WanImageToVideoPipeline
+    call_style: image
+    model_id: Wan-AI/Wan2.2-TI2V-5B-Diffusers
+    dtype: bfloat16
+    width: 1280
+    height: 704
+    fps: 24
+    frame_multiple: 4
+    steps: 50
+    guidance: 5.0
+    vae_tiling: true
+
+  wan2.1-i2v-14b-480p:
+    kind: i2v
+    license: Apache-2.0
+    permissive: true
+    pipeline: WanImageToVideoPipeline
+    call_style: image
+    model_id: Wan-AI/Wan2.1-I2V-14B-480P-Diffusers
+    dtype: bfloat16
+    width: 832
+    height: 480
+    fps: 16
+    frame_multiple: 4
+    steps: 40
+    guidance: 5.0
+
+  ltx-0.9.7-distilled:
+    kind: i2v
+    license: LTX-Video Open Weights (paid license above a revenue threshold)
+    permissive: false
+    pipeline: LTXConditionPipeline
+    call_style: ltx_condition
+    model_id: Lightricks/LTX-Video-0.9.7-distilled
+    dtype: bfloat16
+    width: 768
+    height: 512
+    fps: 24
+    frame_multiple: 8
+    steps: 8
+    guidance: 1.0
+    extra_kwargs:
+      decode_timestep: 0.05
+      image_cond_noise_scale: 0.025
+    vae_tiling: true
+
+  hunyuanvideo-i2v:
+    kind: i2v
+    license: Tencent Hunyuan Community (excludes EU, UK, South Korea)
+    permissive: false
+    pipeline: HunyuanVideoImageToVideoPipeline
+    call_style: image
+    model_id: hunyuanvideo-community/HunyuanVideo-I2V
+    dtype: bfloat16
+    width: 848
+    height: 480
+    fps: 24
+    frame_multiple: 4
+    steps: 30
+    guidance: 1.0
+    vae_tiling: true
+    cpu_offload: true
