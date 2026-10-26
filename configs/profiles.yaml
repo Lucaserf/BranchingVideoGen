@@ -37,7 +37,8 @@ render_types:
   # Fast image-to-video model, used for most shots.
   standard:
     model: ltx-0.9.7-distilled
-    est_seconds_per_shot: 25
+    # Measured on the L40: 20.0 s per 121-frame shot, 38.5 GB peak VRAM.
+    est_seconds_per_shot: 20
 
   # Higher quality image-to-video model, used for the most important shots.
   # 40 steps without a distillation LoRA is slow (minutes per shot). To try a

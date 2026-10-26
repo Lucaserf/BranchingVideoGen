@@ -17,6 +17,8 @@ gpu = [
     "transformers",
     "accelerate",
     "sentencepiece",
+    "tiktoken",
+    "imageio-ffmpeg",
     "peft",
     "ftfy",
 ]
