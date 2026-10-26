@@ -23,7 +23,20 @@ This first piece measures what the L40 can actually render and plans each film a
 | `standard` | LTX-Video 0.9.7 distilled | Fast image-to-video, used for most shots |
 | `hero` | Wan 2.2 I2V A14B | Higher quality image-to-video for the most important shots |
 
-Every shot also needs a keyframe from FLUX.1-schnell. Model ids, pipeline classes and call arguments are all in the config, so swapping a model needs no code change.
+Every shot also needs a keyframe from FLUX.1-schnell.
+
+## Choosing models
+
+`configs/profiles.yaml` has a `models` catalog. Each stage (`keyframe`, `standard`, `hero`) names a catalog model with `model:`, and any other key on the stage overrides the catalog defaults. Each entry records its license and whether it is `permissive` (commercial use with no field-of-use, revenue or territory limits).
+
+```bash
+python -m bvg.models                       # list the catalog and which stage uses what
+python -m bvg.models --permissive-only
+python -m benchmark.run_benchmark --model standard=wan2.2-ti2v-5b --model keyframe=qwen-image
+python -m benchmark.run_benchmark --permissive-only   # refuses restricted models
+```
+
+Set `model_policy.permissive_only: true` in the config to enforce this everywhere. Adding a model is a new catalog entry: any diffusers pipeline class with its model id and call arguments. The license notes are a summary; check each model card before shipping.
 
 ## Running the benchmark on the L40
 

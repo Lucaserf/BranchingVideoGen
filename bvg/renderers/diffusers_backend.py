@@ -61,9 +61,9 @@ class KeyframeRenderer:
 
     def render(self, prompt: str, seed: int = 0) -> Image.Image:
         s = self.settings
+        guidance = {s.get("guidance_arg", "guidance_scale"): s["guidance"]}
         return self.pipe(prompt=prompt, width=s["width"], height=s["height"], num_inference_steps=s["steps"],
-                         guidance_scale=s["guidance"], generator=_generator(seed),
-                         **s.get("extra_kwargs", {})).images[0]
+                         generator=_generator(seed), **guidance, **s.get("extra_kwargs", {})).images[0]
 
     def unload(self) -> None:
         _unload(self.pipe)

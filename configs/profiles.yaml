@@ -13,17 +13,15 @@ film:
   # available during play.
   seconds_per_choice: 90
 
+# When true, selecting a model whose catalog entry is not `permissive` is an error.
+model_policy:
+  permissive_only: false
+
+# Which catalog model each stage uses. Override on the command line with
+# `--model standard=wan2.2-ti2v-5b`. Any key next to `model` overrides the
+# catalog defaults for that stage.
 keyframe:
-  backend: diffusers_t2i
-  pipeline: FluxPipeline
-  model_id: black-forest-labs/FLUX.1-schnell
-  dtype: bfloat16
-  width: 832
-  height: 480
-  steps: 4
-  guidance: 0.0
-  extra_kwargs:
-    max_sequence_length: 256
+  model: flux1-schnell
   est_seconds_per_image: 2
 
 render_types:
@@ -38,45 +36,14 @@ render_types:
 
   # Fast image-to-video model, used for most shots.
   standard:
-    backend: diffusers_i2v
-    pipeline: LTXConditionPipeline
-    call_style: ltx_condition
-    model_id: Lightricks/LTX-Video-0.9.7-distilled
-    dtype: bfloat16
-    width: 768
-    height: 512
-    fps: 24
-    frame_multiple: 8
-    steps: 8
-    guidance: 1.0
-    extra_kwargs:
-      decode_timestep: 0.05
-      image_cond_noise_scale: 0.025
-    vae_tiling: true
-    cpu_offload: false
+    model: ltx-0.9.7-distilled
     est_seconds_per_shot: 25
 
   # Higher quality image-to-video model, used for the most important shots.
   # 40 steps without a distillation LoRA is slow (minutes per shot). To try a
-  # 4-step distillation LoRA, fill in `lora` and set steps: 4, guidance: 1.0.
+  # 4-step distillation LoRA, set `lora` and `steps: 4`, `guidance: 1.0` here.
   hero:
-    backend: diffusers_i2v
-    pipeline: WanImageToVideoPipeline
-    call_style: image
-    model_id: Wan-AI/Wan2.2-I2V-A14B-Diffusers
-    dtype: bfloat16
-    width: 832
-    height: 480
-    fps: 16
-    frame_multiple: 4
-    steps: 40
-    guidance: 3.5
-    lora: null
-    # lora:
-    #   repo: <huggingface repo of the LoRA>
-    #   weight_name: <safetensors file in that repo>
-    #   scale: 1.0
-    vae_tiling: false
+    model: wan2.2-i2v-a14b
     cpu_offload: true
     est_seconds_per_shot: 600
 
@@ -96,3 +63,132 @@ profiles:
   quality:
     target_wait_minutes: 60
     max_hero_shots: 36
+
+# Model catalog. `kind` is t2i (keyframes) or i2v (shots). `permissive` means the
+# license allows commercial use with no field-of-use, revenue or territory limits.
+# License notes are a summary; check the model card before shipping.
+models:
+  # --- keyframes (text to image) ---
+  flux1-schnell:
+    kind: t2i
+    license: Apache-2.0
+    permissive: true
+    pipeline: FluxPipeline
+    model_id: black-forest-labs/FLUX.1-schnell
+    dtype: bfloat16
+    width: 832
+    height: 480
+    steps: 4
+    guidance: 0.0
+    extra_kwargs:
+      max_sequence_length: 256
+
+  qwen-image:
+    kind: t2i
+    license: Apache-2.0
+    permissive: true
+    pipeline: QwenImagePipeline
+    model_id: Qwen/Qwen-Image
+    dtype: bfloat16
+    width: 832
+    height: 480
+    steps: 30
+    guidance: 4.0
+    guidance_arg: true_cfg_scale
+    extra_kwargs:
+      negative_prompt: " "
+
+  flux1-dev:
+    kind: t2i
+    license: FLUX.1 [dev] Non-Commercial
+    permissive: false
+    pipeline: FluxPipeline
+    model_id: black-forest-labs/FLUX.1-dev
+    dtype: bfloat16
+    width: 832
+    height: 480
+    steps: 28
+    guidance: 3.5
+
+  # --- shots (image to video) ---
+  wan2.2-i2v-a14b:
+    kind: i2v
+    license: Apache-2.0
+    permissive: true
+    pipeline: WanImageToVideoPipeline
+    call_style: image
+    model_id: Wan-AI/Wan2.2-I2V-A14B-Diffusers
+    dtype: bfloat16
+    width: 832
+    height: 480
+    fps: 16
+    frame_multiple: 4
+    steps: 40
+    guidance: 3.5
+
+  wan2.2-ti2v-5b:
+    kind: i2v
+    license: Apache-2.0
+    permissive: true
+    pipeline: WanImageToVideoPipeline
+    call_style: image
+    model_id: Wan-AI/Wan2.2-TI2V-5B-Diffusers
+    dtype: bfloat16
+    width: 1280
+    height: 704
+    fps: 24
+    frame_multiple: 4
+    steps: 50
+    guidance: 5.0
+    vae_tiling: true
+
+  wan2.1-i2v-14b-480p:
+    kind: i2v
+    license: Apache-2.0
+    permissive: true
+    pipeline: WanImageToVideoPipeline
+    call_style: image
+    model_id: Wan-AI/Wan2.1-I2V-14B-480P-Diffusers
+    dtype: bfloat16
+    width: 832
+    height: 480
+    fps: 16
+    frame_multiple: 4
+    steps: 40
+    guidance: 5.0
+
+  ltx-0.9.7-distilled:
+    kind: i2v
+    license: LTX-Video Open Weights (paid license above a revenue threshold)
+    permissive: false
+    pipeline: LTXConditionPipeline
+    call_style: ltx_condition
+    model_id: Lightricks/LTX-Video-0.9.7-distilled
+    dtype: bfloat16
+    width: 768
+    height: 512
+    fps: 24
+    frame_multiple: 8
+    steps: 8
+    guidance: 1.0
+    extra_kwargs:
+      decode_timestep: 0.05
+      image_cond_noise_scale: 0.025
+    vae_tiling: true
+
+  hunyuanvideo-i2v:
+    kind: i2v
+    license: Tencent Hunyuan Community (excludes EU, UK, South Korea)
+    permissive: false
+    pipeline: HunyuanVideoImageToVideoPipeline
+    call_style: image
+    model_id: hunyuanvideo-community/HunyuanVideo-I2V
+    dtype: bfloat16
+    width: 848
+    height: 480
+    fps: 24
+    frame_multiple: 4
+    steps: 30
+    guidance: 1.0
+    vae_tiling: true
+    cpu_offload: true

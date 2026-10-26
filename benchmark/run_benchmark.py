@@ -21,6 +21,7 @@ import numpy as np
 from PIL import Image
 
 from bvg.config import DEFAULT_CONFIG, load_config
+from bvg.models import apply_overrides, stage_settings
 from bvg.renderers import make_shot_renderer
 from bvg.video import write_mp4
 
@@ -86,9 +87,13 @@ def main() -> None:
     parser.add_argument("--shots", type=int, default=3, help="timed samples per type (after one warmup)")
     parser.add_argument("--out", default="results/bench.json")
     parser.add_argument("--save-videos", default=None, help="directory to write the rendered shots to")
+    parser.add_argument("--model", action="append", default=[], metavar="STAGE=MODEL",
+                        help="pick a catalog model for a stage, e.g. --model standard=wan2.2-ti2v-5b (repeatable)")
+    parser.add_argument("--permissive-only", action="store_true", default=None,
+                        help="refuse models whose license has usage restrictions")
     args = parser.parse_args()
 
-    config = load_config(args.config)
+    config = apply_overrides(load_config(args.config), args.model, args.permissive_only)
     shot_seconds = config["film"]["shot_seconds"]
     types = [t.strip() for t in args.types.split(",") if t.strip()]
     torch = _cuda()
@@ -99,6 +104,7 @@ def main() -> None:
         "gpu": torch.cuda.get_device_name(0) if torch else None,
         "shot_seconds": shot_seconds,
         "config": args.config,
+        "models": {},
         "results": {},
     }
 
@@ -107,7 +113,7 @@ def main() -> None:
         Path(args.out).write_text(json.dumps(report, indent=2))
 
     n = args.shots + 1  # first one is the warmup
-    kf = config["keyframe"]
+    kf = stage_settings(config, "keyframe")
     keyframes = [_placeholder_keyframe(kf["width"], kf["height"], i) for i in range(n)]
 
     if "keyframe" in types:
@@ -128,13 +134,14 @@ def main() -> None:
                 save_dir.mkdir(parents=True, exist_ok=True)
                 img.save(save_dir / f"keyframe_{i}.png")
         report["results"]["keyframe"] = _summary(times, load_s, torch)
+        report["models"]["keyframe"] = kf.get("model_name")
         renderer.unload()
         save()
 
     for name in types:
         if name == "keyframe":
             continue
-        settings = config["render_types"][name]
+        settings = stage_settings(config, name)
         print(f"[{name}] loading {settings.get('model_id', settings['backend'])}")
         if torch:
             torch.cuda.reset_peak_memory_stats()
@@ -150,6 +157,7 @@ def main() -> None:
                 write_mp4(frames, save_dir / f"{name}_{i}.mp4", settings["fps"])
         report["results"][name] = _summary(times, load_s, torch)
         report["results"][name]["frames_per_shot"] = len(frames)
+        report["models"][name] = settings.get("model_name")
         renderer.unload()
         save()
 
