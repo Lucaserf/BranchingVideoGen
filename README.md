@@ -38,6 +38,24 @@ python -m benchmark.run_benchmark --permissive-only   # refuses restricted model
 
 Set `model_policy.permissive_only: true` in the config to enforce this everywhere. Adding a model is a new catalog entry: any diffusers pipeline class with its model id and call arguments. The license notes are a summary; check each model card before shipping.
 
+### Uncensored and community models
+
+The pipeline adds no content filter, safety checker or prompt rewriting: whatever the selected model generates is what ends up in the film. The open video models in the catalog (Wan, LTX-Video, HunyuanVideo) are not refusal-tuned; how far they go depends on their training data. To use a community fine-tune instead, add a catalog entry whose `model_id` is its Hugging Face repo or a local folder in diffusers format, or keep a base entry and set `lora` on the stage:
+
+```yaml
+models:
+  my-finetune:
+    kind: i2v
+    license: see model card
+    permissive: false
+    pipeline: WanImageToVideoPipeline
+    call_style: image
+    model_id: /models/my-wan-finetune   # or an HF repo id
+    # ...same fields as the base model it was trained from
+```
+
+Since viewers type free text into the story, the story layer (not yet built) should still block a small set of things no model choice changes: sexual content involving minors and realistic depictions of real, identifiable people.
+
 ## Running the benchmark on the L40
 
 ```bash
