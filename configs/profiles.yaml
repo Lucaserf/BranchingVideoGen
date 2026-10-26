@@ -127,6 +127,8 @@ models:
     steps: 40
     guidance: 3.5
 
+  # Measured on the L40 with cpu_offload on: 645 s per shot, 15.9 GB peak VRAM.
+  # It fits in VRAM, so try cpu_offload: false, 832x480 or fewer steps for speed.
   wan2.2-ti2v-5b:
     kind: i2v
     license: Apache-2.0

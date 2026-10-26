@@ -54,7 +54,7 @@ Notes from the first L40 run:
 - The T5 tokenizer in recent transformers needs `sentencepiece` and `tiktoken` (both in the `gpu` extra).
 - Without a system ffmpeg, the bundled `imageio-ffmpeg` binary is used.
 - FLUX.1-schnell is gated: accept its license on Hugging Face and log in first.
-- Wan 2.2 I2V A14B is about 126 GB of weights, so check free disk before running `hero`. `--model hero=wan2.2-ti2v-5b` is a smaller stand-in.
+- Wan 2.2 I2V A14B is about 126 GB of weights and needs about 70 GB of host RAM to load, so check free disk and RAM before running `hero`. `--model hero=wan2.2-ti2v-5b` is a smaller stand-in.
 - LTX-Video distilled peaks at 38.5 GB, so only one video model fits in VRAM at a time; the benchmark unloads each type before the next.
 
 Use `--types keyframe,standard` to run a subset. Results are written after each type, so a crash in one model keeps the earlier numbers. The hero model defaults to 40 steps with CPU offload, which is slow. To try a 4-step distillation LoRA, fill in `lora` under `hero` in the config and set `steps: 4`, `guidance: 1.0`.
