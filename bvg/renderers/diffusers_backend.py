@@ -7,8 +7,19 @@ planner and pan renderer work without the GPU stack.
 
 from __future__ import annotations
 
-
 from PIL import Image
+
+# Weight-only quantization (bitsandbytes) to fit big models on the GPU: about a quarter
+# (nf4) or half (int8) of the bf16 size, somewhat slower per step.
+QUANT_BACKENDS = {"nf4": "bitsandbytes_4bit", "int8": "bitsandbytes_8bit"}
+
+
+def _quant_kwargs(mode: str, dtype) -> dict:
+    if mode == "nf4":
+        return {"load_in_4bit": True, "bnb_4bit_quant_type": "nf4", "bnb_4bit_compute_dtype": dtype}
+    if mode == "int8":
+        return {"load_in_8bit": True}
+    raise ValueError(f"unknown quantize mode {mode!r}, expected one of {sorted(QUANT_BACKENDS)}")
 
 
 def _load_pipeline(settings: dict):
@@ -17,14 +28,26 @@ def _load_pipeline(settings: dict):
 
     pipeline_cls = getattr(diffusers, settings["pipeline"])
     dtype = getattr(torch, settings.get("dtype", "bfloat16"))
-    components = {}
+    quant = settings.get("quantize")  # {"mode": "nf4", "components": ["transformer", "text_encoder"]}
+    quantized = set(quant.get("components", ["transformer"])) if quant else set()
+    components, kwargs = {}, {}
     encoder = settings.get("text_encoder")
     if encoder:  # e.g. an abliterated copy of the model's own text encoder
         import transformers
 
         encoder_cls = getattr(transformers, encoder.get("class", "AutoModel"))
-        components["text_encoder"] = encoder_cls.from_pretrained(encoder["model_id"], torch_dtype=dtype)
-    pipe = pipeline_cls.from_pretrained(settings["model_id"], torch_dtype=dtype, **components)
+        extra = {}
+        if "text_encoder" in quantized:
+            extra["quantization_config"] = transformers.BitsAndBytesConfig(**_quant_kwargs(quant["mode"], dtype))
+            quantized.discard("text_encoder")
+        components["text_encoder"] = encoder_cls.from_pretrained(encoder["model_id"], torch_dtype=dtype, **extra)
+    if quantized:
+        from diffusers.quantizers import PipelineQuantizationConfig
+
+        kwargs["quantization_config"] = PipelineQuantizationConfig(
+            quant_backend=QUANT_BACKENDS[quant["mode"]], quant_kwargs=_quant_kwargs(quant["mode"], dtype),
+            components_to_quantize=sorted(quantized))
+    pipe = pipeline_cls.from_pretrained(settings["model_id"], torch_dtype=dtype, **components, **kwargs)
 
     lora = settings.get("lora")
     if lora:

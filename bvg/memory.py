@@ -239,13 +239,14 @@ def main() -> None:
     parser.add_argument("--config", default=None)
     parser.add_argument("--model", action="append", default=[], metavar="STAGE=MODEL")
     parser.add_argument("--photo", action="store_true", help="the film uses a photo of the protagonist")
+    parser.add_argument("--hero", action="store_true", help="the film uses quality (hero) shots")
     args = parser.parse_args()
 
     config = apply_overrides(load_config(args.config) if args.config else load_config(), args.model)
     server = config.get("server", {})
     snap = snapshot(config.get("story", {}).get("base_url"))
     print(describe(snap))
-    stages = ["keyframe", "standard", "hero", "story"] + (["photo"] if args.photo else [])
+    stages = ["keyframe", "standard", "story"] + (["photo"] if args.photo else []) + (["hero"] if args.hero else [])
     settings = {s: stage_settings(config, s) for s in stages}
     result = forecast(settings, server.get("residency", "sequential"), snap, used_stages=stages,
                       reserve_gb=server.get("memory_reserve_gb", 4), llm_device=config["story"].get("device", "gpu"))

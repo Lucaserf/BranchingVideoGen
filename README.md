@@ -129,7 +129,15 @@ The story writer can be abliterated too: these LLMs have the "refusal direction"
 | `qwen3.8-27b-abliterated` | ~18 GB | The strongest writer here; dense, so it needs GPU room |
 | `qwen3-8b` | ~5 GB | The stock model, for comparison |
 
-For images, `qwen-image-abliterated` and `qwen-image-edit-2509-abliterated` are Qwen-Image and Qwen-Image-Edit with an abliterated copy of their text encoder (Qwen2.5-VL 7B), set through the entry's `text_encoder` key. FLUX and the video models use T5 text encoders, which are not refusal-tuned, so there is nothing to abliterate there.
+For images, these abliterated models stay on the GPU on their own:
+
+| Model | GPU | Notes |
+| --- | --- | --- |
+| `z-image-turbo-abliterated` | ~24 GB | Z-Image-Turbo (6B, 8 steps, Apache-2.0) with an abliterated Qwen3-4B text encoder. Fast, strong realism; the first choice for keyframes |
+| `qwen-image-abliterated-nf4` | ~22 GB | Qwen-Image (20B) and its abliterated encoder in 4-bit; best prompt following and text, slower |
+| `qwen-image-edit-2509-abliterated-nf4` | ~24 GB | The photo model (your face in the scene), abliterated and 4-bit |
+
+The bf16 `qwen-image-abliterated` and `qwen-image-edit-2509-abliterated` (about 58 GB each) need CPU offload and nearly all of the server's RAM. Any entry can be quantized with `quantize: {mode: nf4 or int8, components: [...]}`, and its text encoder swapped with `text_encoder`. FLUX and the video models use T5 text encoders, which are not refusal-tuned, so there is nothing to abliterate there.
 
 Two limits stay whatever the model: the writer's instructions forbid sexual content involving minors and sexual or nude depictions of a viewer's uploaded photo. With an abliterated writer that instruction is the only guard, so add a classifier on prompts before opening the app to the public.
 
