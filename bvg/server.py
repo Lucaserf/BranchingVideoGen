@@ -32,6 +32,7 @@ import threading
 import time
 import uuid
 import zlib
+from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -146,6 +147,25 @@ class Jobs:
             return sum(j[2] == sid for j in self.items)
 
 
+class LogBuffer(logging.Handler):
+    """The last log lines, numbered, so the web page can show what the server is doing."""
+
+    def __init__(self, size: int = 1000):
+        super().__init__(logging.INFO)
+        self.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s", "%H:%M:%S"))
+        self.lines: deque[dict] = deque(maxlen=size)
+        self.seq = itertools.count(1)
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            self.lines.append({"seq": next(self.seq), "level": record.levelname, "text": self.format(record)})
+        except Exception:
+            self.handleError(record)
+
+    def since(self, after: int) -> list[dict]:
+        return [line for line in list(self.lines) if line["seq"] > after]
+
+
 class ForecastIn(BaseModel):
     models: dict[str, str] = {}
     profile: str = "fast"
@@ -176,6 +196,7 @@ class App:
                                       config.get("story", {}).get("base_url")).start()
         self.seq = itertools.count()
         self.lock = threading.Lock()
+        self.logs = LogBuffer()  # main() attaches it to the root logger
         threading.Thread(target=self._worker, daemon=True).start()
         threading.Thread(target=self._writer_worker, daemon=True).start()
 
@@ -548,6 +569,10 @@ def build(app_state: App) -> FastAPI:
         return {"now": m.latest, "low": m.low, "residency": app_state.engine.residency,
                 "loaded": [name for _, name in app_state.engine.loaded]}
 
+    @api.get("/api/logs")
+    def logs(after: int = 0):
+        return {"lines": app_state.logs.since(after)}
+
     @api.post("/api/memory/forecast")
     def memory_forecast(body: ForecastIn):
         return app_state.forecast_for(body)
@@ -606,7 +631,9 @@ def main() -> None:
         engine.preload([stage_settings(config, "keyframe")])
     import uvicorn
 
-    uvicorn.run(build(App(config, engine, args.bench)), host=args.host, port=args.port)
+    app_state = App(config, engine, args.bench)
+    logging.getLogger().addHandler(app_state.logs)
+    uvicorn.run(build(app_state), host=args.host, port=args.port)
 
 
 if __name__ == "__main__":

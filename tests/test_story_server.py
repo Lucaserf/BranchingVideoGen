@@ -329,3 +329,22 @@ def test_ollama_api_unloads_and_picks_the_device(fake_llm):
     assert path == "/api/chat" and body["keep_alive"] == 0 and body["options"]["num_gpu"] == 0
     assert body["think"] is False and body["format"] == "json"
     server.shutdown()
+
+
+def test_log_buffer_serves_lines_after_a_seq():
+    import logging
+
+    from bvg.server import LogBuffer
+
+    buf, log = LogBuffer(size=3), logging.getLogger("bvg.test-logs")
+    log.addHandler(buf)
+    log.setLevel(logging.INFO)
+    try:
+        for n in range(5):
+            log.info("line %d", n)
+        log.warning("careful")
+    finally:
+        log.removeHandler(buf)
+    lines = buf.since(0)
+    assert [l["seq"] for l in lines] == [4, 5, 6] and lines[-1]["level"] == "WARNING"
+    assert "line 4" in lines[1]["text"] and buf.since(5) == lines[2:]

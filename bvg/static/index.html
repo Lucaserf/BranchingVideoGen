@@ -58,6 +58,11 @@
   #models { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
   #photo-preview { width: 120px; height: 120px; object-fit: cover; border-radius: 10px; border: 1px solid var(--line); }
   .error { color: var(--bad); }
+  #log { background: #000; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin: 8px 0 0;
+    max-height: 320px; overflow: auto; font: 12px/1.45 ui-monospace, monospace; color: var(--muted);
+    white-space: pre-wrap; word-break: break-word; }
+  #log .WARNING { color: var(--accent); } #log .ERROR, #log .CRITICAL { color: var(--bad); }
+  #log-box summary { font-size: 15px; }
 </style>
 </head>
 <body>
@@ -152,6 +157,10 @@
       <span id="eta" class="muted"></span></div>
     <div class="bar" style="margin:8px 0 12px"><div id="progress-bar"></div></div>
     <div class="strip" id="strip"></div>
+    <details id="log-box" open style="margin-top:16px">
+      <summary>Server log</summary>
+      <pre id="log"></pre>
+    </details>
   </section>
   <p class="error" id="error"></p>
 </main>
@@ -391,13 +400,32 @@ function render() {
   }
 }
 
+let logSeq = 0, logBusy = false;
+async function pollLogs() {
+  if (logBusy) return;
+  logBusy = true;
+  try {
+    const { lines } = await api(`/api/logs?after=${logSeq}`), box = $("log");
+    if (lines.length) {
+      const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 24;
+      box.insertAdjacentHTML("beforeend", lines.map((l) => `<div class="${l.level}">${esc(l.text)}</div>`).join(""));
+      while (box.childElementCount > 1000) box.firstElementChild.remove();
+      logSeq = lines[lines.length - 1].seq;
+      if (atBottom) box.scrollTop = box.scrollHeight;
+    }
+  } catch { /* the server may be restarting */ }
+  logBusy = false;
+}
+
 function poll() {
   clearInterval(pollTimer);
+  pollLogs();
   pollTimer = setInterval(async () => {
     try {
       session = await api(`/api/sessions/${session.id}`);
       stateKey(session) !== shownKey ? show() : render();
     } catch {}
+    await pollLogs();
     if (session.film_status === "done" || session.film_status === "failed") clearInterval(pollTimer);
   }, 1500);
 }
