@@ -11,6 +11,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 STYLES = {
+    "realistic": {
+        "label": "Realistic",
+        "prompt": "photorealistic cinematic film still, natural skin texture, shot on 35mm lens, shallow depth of field, "
+                  "soft natural lighting, realistic color grading",
+    },
     "animated": {
         "label": "3D animated",
         "prompt": "3D animated feature film still, soft global illumination, expressive characters, vibrant colors",
