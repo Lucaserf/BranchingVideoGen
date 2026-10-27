@@ -203,6 +203,16 @@ class LLMWriter:
         self.prompt_suffix = settings.get("prompt_suffix", "")  # e.g. " /no_think" to turn off Qwen3 thinking
         self.language = settings.get("language", "English")
         self._json_mode = True
+        # Ollama's own API (not its OpenAI one) lets us pick CPU or GPU per request, unload the model
+        # right after each call, and turn thinking off.
+        self.api = settings.get("api", "auto")
+        if self.api == "auto":
+            self.api = "ollama" if ":11434" in self.base_url else "openai"
+        self.device = settings.get("device", "gpu")
+        self.keep_alive = settings.get("keep_alive", 0)  # seconds Ollama keeps the model loaded after a call
+        self.num_ctx = settings.get("num_ctx", 8192)
+        # Held during each call when the LLM shares the GPU, so it never runs alongside a render.
+        self.gpu_lock = None
 
     def _system(self) -> str:
         beats = "\n".join(f"{i + 1}. {b.title}: {b.purpose}" for i, b in enumerate(BEATS))
@@ -217,7 +227,41 @@ class LLMWriter:
         with urllib.request.urlopen(req, timeout=self.timeout) as res:
             return json.load(res)
 
+    def _ask_ollama(self, prompt: str) -> dict:
+        root = self.base_url.removesuffix("/v1")
+        options = {"temperature": self.temperature, "num_predict": self.max_tokens, "num_ctx": self.num_ctx}
+        if self.device == "cpu":
+            options["num_gpu"] = 0
+        body = {"model": self.model, "stream": False, "format": "json", "think": False,
+                "keep_alive": self.keep_alive, "options": options,
+                "messages": [{"role": "system", "content": self._system()}, {"role": "user", "content": prompt}],
+                **self.extra_body}
+        last_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                req = urllib.request.Request(f"{root}/api/chat", data=json.dumps(body).encode(),
+                                             headers={"Content-Type": "application/json"}, method="POST")
+                with urllib.request.urlopen(req, timeout=self.timeout) as res:
+                    return parse_json(json.load(res)["message"]["content"] or "")
+            except urllib.error.HTTPError as e:
+                last_error = e
+                if e.code == 400 and "think" in body:  # a model without a thinking switch
+                    body.pop("think")
+                    continue
+            except (WriterError, KeyError, TypeError, OSError) as e:
+                last_error = e
+            log.warning("writer attempt %d failed: %s", attempt + 1, last_error)
+        raise WriterError(f"the LLM failed: {last_error}")
+
     def ask(self, prompt: str) -> dict:
+        if self.gpu_lock is not None and self.device == "gpu":
+            with self.gpu_lock:
+                return self._ask(prompt)
+        return self._ask(prompt)
+
+    def _ask(self, prompt: str) -> dict:
+        if self.api == "ollama":
+            return self._ask_ollama(prompt)
         body = {"model": self.model, "temperature": self.temperature, "max_tokens": self.max_tokens,
                 "messages": [{"role": "system", "content": self._system()}, {"role": "user", "content": prompt + self.prompt_suffix}],
                 **self.extra_body}
@@ -346,8 +390,9 @@ class FallbackWriter:
         return self._do("shots", state, act_index)
 
 
-def make_writer(settings: dict, mock: bool = False):
+def make_writer(settings: dict, mock: bool = False, gpu_lock=None):
     if mock or settings.get("writer", "llm") == "simple":
         return SimpleWriter()
     llm = LLMWriter(settings)
+    llm.gpu_lock = gpu_lock
     return FallbackWriter(llm, SimpleWriter()) if settings.get("fallback_to_simple", True) else llm

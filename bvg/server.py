@@ -26,6 +26,7 @@ import io
 import itertools
 import json
 import logging
+import os
 import queue
 import threading
 import time
@@ -216,7 +217,8 @@ class App:
                               shots={(s.act, s.index): ShotState(s.act, s.index, s.render_type) for s in plan.shots},
                               dir=self.outputs / sid, settings=settings, costs=costs, voice=voice,
                               music=body.music, captions=body.captions, photo=photo,
-                              writer=self.writer or make_writer(settings["story"]), forecast=forecast)
+                              writer=self.writer or make_writer(settings["story"], gpu_lock=self.engine.lock),
+                              forecast=forecast)
             session.dir.mkdir(parents=True, exist_ok=True)
             if photo is not None:
                 photo.save(session.dir / "photo.png")
@@ -420,7 +422,7 @@ class App:
                 elif kind == VIDEO and session.shots[(act, index)].status == "failed":
                     pass  # its keyframe failed
                 else:
-                    self._render(session, kind, session.shots[(act, index)])
+                    self._render_safely(session, kind, session.shots[(act, index)])
             except Exception as e:  # keep serving other jobs
                 log.exception("job failed")
                 session.error = f"{type(e).__name__}: {e}"
@@ -464,6 +466,21 @@ class App:
         loaded = set(self.engine.loaded)
         cheap = [j for j in ready if (key := self._needs(j)) is None or key in loaded]
         return min(cheap or ready)
+
+    def _render_safely(self, session: Session, kind: int, shot: ShotState) -> None:
+        """Render under the GPU lock. On out-of-memory, log what was in memory, free everything and retry once."""
+        for attempt in (1, 2):
+            try:
+                with self.engine.lock:
+                    return self._render(session, kind, shot)
+            except Exception as e:
+                if "out of memory" not in str(e).lower() or attempt == 2:
+                    raise
+                log.error("out of memory on shot %d.%d (%s); %s. Freeing every model and retrying.",
+                          shot.act + 1, shot.index + 1, "keyframe" if kind == KEYFRAME else shot.render_type,
+                          memory.describe(self.monitor.sample()))
+                with self.engine.lock:
+                    self.engine.unload_all()
 
     def _render(self, session: Session, kind: int, shot: ShotState) -> None:
         seed = zlib.crc32(f"{session.id}:{shot.act}:{shot.index}".encode())
@@ -573,8 +590,14 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    # Less fragmentation when models of different sizes take turns on the GPU. Set before torch loads.
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     config = apply_overrides(load_config(args.config) if args.config else load_config(), args.model)
+    # Log to the terminal and to a file, so a crash can be looked at afterwards.
+    log_file = Path(config.get("server", {}).get("log_file", "outputs/server.log"))
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+                        handlers=[logging.StreamHandler(), logging.FileHandler(log_file)])
     engine = Engine(config, mock=args.mock)
     # Mock runs use the simple writer unless --writer llm asks for the real one.
     config["story"]["writer"] = args.writer or ("simple" if args.mock else config["story"].get("writer", "llm"))

@@ -38,6 +38,7 @@ server:
   memory_reserve_gb: 4        # kept free for the OS, ffmpeg, the narration voice
   block_on_overflow: true
   memory_monitor_seconds: 5
+  log_file: outputs/server.log
   idle_lease_minutes: 15
   # Not used with residency sequential. With swap, how many pipelines stay in RAM.
   max_loaded_models: 3
@@ -100,8 +101,15 @@ story:
   max_tokens: 2500
   timeout_seconds: 120
   fallback_to_simple: true
-  device: gpu                 # where the LLM server runs the model (gpu or cpu); used for the memory forecast
-  extra_body: {}              # extra request fields, e.g. {"think": false} or {"options": {"num_gpu": 0}} for Ollama
+  # With Ollama, its own API is used (api: ollama): device picks GPU or CPU per
+  # request, the model is unloaded keep_alive seconds after each call, and on the
+  # GPU a call waits for the current render to finish, so the LLM and a video
+  # model never compute at the same time.
+  api: auto                   # ollama, openai (any other server), or auto: ollama on port 11434
+  device: gpu                 # gpu or cpu
+  keep_alive: 0               # unload right after each call, freeing its memory for rendering
+  num_ctx: 8192               # the prompts plus the reply need more than Ollama's default context
+  extra_body: {}              # extra request fields
 
 # Keyframes for shots with the protagonist when the viewer uploads a photo: an
 # image-edit model redraws the scene with that person in it.
@@ -140,7 +148,7 @@ profiles:
 models:
   # --- story writers (LLM) ---
   # model_id is the name on the LLM server (here Ollama: `ollama pull <model_id>`).
-  # vram_gb is the Q4 download size, about what the model takes in GPU memory.
+  # vram_gb is the Q4 download size plus an 8k-token context, about what the model takes in GPU memory.
   # The video models peak at 32-38 GB, so on the 48 GB L40 only the small writers
   # fit on the GPU next to them; the larger ones need GPU room or run on the CPU.
   # Abliterated models have the refusal direction removed from their weights, so
@@ -151,7 +159,7 @@ models:
     permissive: true
     uncensored: true
     model_id: huihui_ai/qwen3-abliterated:8b
-    vram_gb: 5
+    vram_gb: 6.5
     prompt_suffix: " /no_think"
     note: fits on the GPU next to the video models
 
@@ -161,7 +169,7 @@ models:
     permissive: false
     uncensored: true
     model_id: huihui_ai/gemma-4-abliterated:12b
-    vram_gb: 9  # estimate, size not listed
+    vram_gb: 10.5  # estimate, size not listed
     note: better prose, tight next to the video models
 
   qwen3.6-35b-a3b-abliterated:
@@ -170,7 +178,7 @@ models:
     permissive: true
     uncensored: true
     model_id: huihui_ai/Qwen3.6-abliterated:35b
-    vram_gb: 22
+    vram_gb: 24
     note: mixture of experts (3B active), fast enough on the CPU
 
   gemma4-26b-a4b-abliterated:
@@ -179,7 +187,7 @@ models:
     permissive: false
     uncensored: true
     model_id: huihui_ai/gemma-4-abliterated:26b
-    vram_gb: 18
+    vram_gb: 20
     note: mixture of experts (4B active), fast enough on the CPU
 
   qwen3.8-27b-abliterated:
@@ -188,7 +196,7 @@ models:
     permissive: true
     uncensored: true
     model_id: huihui_ai/Qwen3.8-abliterated:27b
-    vram_gb: 18
+    vram_gb: 20
     note: the strongest writer here; dense, so it needs GPU room
 
   qwen3-8b:
@@ -196,7 +204,7 @@ models:
     license: Apache-2.0
     permissive: true
     model_id: qwen3:8b
-    vram_gb: 5
+    vram_gb: 6.5
     prompt_suffix: " /no_think"
     note: the stock model, for comparison
 

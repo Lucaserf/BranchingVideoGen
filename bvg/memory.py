@@ -150,13 +150,16 @@ def forecast(settings: dict[str, dict], residency: str, snap: dict, *, used_stag
     llm_vram = llm_gb if llm_device == "gpu" else 0.0
     llm_ram = llm_gb if llm_device == "cpu" else 0.0
 
+    # An LLM on the GPU never computes during a render (the writer waits for the GPU lock), so it only
+    # shares the GPU with the loaded model's weights, not with the model's peak while rendering.
+    for m in items:
+        resident = 0.0 if m["offload"] else min(m["weights_gb"], m["vram_gb"])
+        m["gpu_need_gb"] = round(max(m["vram_gb"], resident + llm_vram), 1)
+    peak_vram = max((m["gpu_need_gb"] for m in items), default=llm_vram)
     if residency == "sequential":
-        peak_vram = max((m["vram_gb"] for m in items), default=0.0)
         peak_ram = max((m["ram_gb"] for m in items), default=0.0)
     else:  # swap: all in RAM, one on the GPU
-        peak_vram = max((m["vram_gb"] for m in items), default=0.0)
         peak_ram = sum(m["ram_gb"] for m in items)
-    peak_vram += llm_vram
     peak_ram += llm_ram
 
     gpu, ram = snap.get("gpu"), snap.get("ram")
@@ -164,7 +167,7 @@ def forecast(settings: dict[str, dict], residency: str, snap: dict, *, used_stag
     ram_budget = ram["free_gb"] + held_ram_gb - reserve_gb if ram else None
     warnings = []
     for m in items:
-        need = m["vram_gb"] + llm_vram
+        need = m["gpu_need_gb"]
         if vram_budget is not None and need > vram_budget:
             warnings.append(f"{m['model']} needs about {need:.0f} GB on the GPU"
                             f"{' with the LLM' if llm_vram else ''}, more than the {vram_budget:.0f} GB available"

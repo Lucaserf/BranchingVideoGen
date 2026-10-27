@@ -262,17 +262,17 @@ def test_memory_forecast_sequential_vs_swap():
     stages = ["keyframe", "standard", "story"]
     settings = {s: stage_settings(config, s) for s in stages}
     seq = memory.forecast(settings, "sequential", _snap(), used_stages=["keyframe", "standard"])
-    assert seq["fits"] and seq["peak_vram_gb"] == 38.5 + 5  # LTX plus the 8B writer on the GPU
+    assert seq["fits"] and seq["peak_vram_gb"] == 36 + 6.5  # LTX weights plus the 8B writer, never both computing
     assert seq["peak_ram_gb"] == 36  # the largest model alone
     swap = memory.forecast(settings, "swap", _snap(), used_stages=["keyframe", "standard"])
     assert not swap["fits"] and swap["peak_ram_gb"] == 34 + 36  # FLUX and LTX together
     select_model(config, "story", "qwen3.8-27b-abliterated")
     big = memory.forecast({**settings, "story": stage_settings(config, "story")}, "sequential", _snap(),
                           used_stages=["keyframe", "standard"])
-    assert [w.split()[0] for w in big["warnings"]] == ["flux1-schnell", "ltx-0.9.7-distilled"]  # + 18 GB > 44
+    assert [w.split()[0] for w in big["warnings"]] == ["flux1-schnell", "ltx-0.9.7-distilled"]  # + 20 GB > 44
     cpu = memory.forecast({**settings, "story": stage_settings(config, "story")}, "sequential", _snap(),
                           used_stages=["keyframe", "standard"], llm_device="cpu")
-    assert cpu["fits"] and cpu["peak_ram_gb"] == 36 + 18
+    assert cpu["fits"] and cpu["peak_ram_gb"] == 36 + 20
 
 
 def test_scheduler_batches_jobs_by_loaded_model(tmp_path):
@@ -299,3 +299,33 @@ def test_scheduler_batches_jobs_by_loaded_model(tmp_path):
     app.engine._loaded.clear()
     assert app._pick(items) == items[0]  # nothing loaded: keyframes first
     assert app._pick([items[2], items[3]]) is None  # b's video waits for its keyframe, the finish for b
+
+
+def test_ollama_api_unloads_and_picks_the_device(fake_llm):
+    import threading as th
+
+    calls = []
+
+    class Ollama(_FakeLLM):
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            calls.append((self.path, body))
+            act = {"intro": "x", "question": "y", "options": ["a", "b", "c"]}
+            out = json.dumps({"message": {"content": json.dumps({"title": "T", "act": act})}}).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
+
+    server = HTTPServer(("127.0.0.1", 0), Ollama)
+    th.Thread(target=server.serve_forever, daemon=True).start()
+    lock = th.Lock()
+    writer = LLMWriter({"base_url": f"http://127.0.0.1:{server.server_port}/v1", "api": "ollama",
+                        "model_id": "m", "device": "cpu"})
+    writer.gpu_lock = lock
+    with lock:  # on the CPU the writer doesn't wait for the GPU
+        writer.opening(StoryState("anime"))
+    path, body = calls[0]
+    assert path == "/api/chat" and body["keep_alive"] == 0 and body["options"]["num_gpu"] == 0
+    assert body["think"] is False and body["format"] == "json"
+    server.shutdown()

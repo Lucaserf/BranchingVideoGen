@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Your Hero's Journey</title>
+<title>Your Film</title>
 <style>
   :root {
     --bg: #0f0e13; --panel: #1a1820; --line: #2c2934; --text: #ece8f1; --muted: #9a94a6;
@@ -63,8 +63,8 @@
 <body>
 <main>
   <div class="eyebrow">A film made only for you</div>
-  <h1>Your Hero's Journey</h1>
-  <p class="muted" id="subtitle">Six choices. One film made from them, rendered while you play.</p>
+  <h1>Your Film</h1>
+  <p class="muted" id="subtitle">Make the choices, and a film made from them renders while you play.</p>
   <p class="muted" id="memline" style="font-size:13px"></p>
 
   <div id="start">
@@ -88,7 +88,7 @@
     </section>
     <section>
       <h2>Your protagonist <span class="muted" style="font-weight:400;font-size:16px">(optional)</span></h2>
-      <p class="muted">Upload a photo and the hero of every shot will have that face.</p>
+      <p class="muted">Upload a photo and the main character of every shot will have that face.</p>
       <div class="row">
         <img id="photo-preview" class="hidden" alt="">
         <div>
@@ -237,7 +237,7 @@ async function init() {
   const sh = meta.shots;
   pick.shots = sh.shots;
   $("shots-help").textContent = `Each shot is one image prompt and ${sh.shot_seconds} seconds of film, ` +
-    `split across the six steps of the story.`;
+    `spread across the story.`;
   const setShots = (v) => {
     v = Math.max(sh.min_shots, Math.min(sh.max_shots, Math.round(Number(v) || sh.shots)));
     pick.shots = v;
@@ -339,8 +339,7 @@ function show() {
   if (session.act < total) {
     $("play").classList.remove("hidden");
     const cur = session.current;
-    $("act-label").textContent = `${session.title ? session.title + " · " : ""}Act ${session.act + 1} of ${total} · ${
-      meta.beats[session.act].title}`;
+    $("act-label").textContent = `${session.title ? session.title + " · " : ""}Choice ${session.act + 1} of ${total}`;
     $("writing").classList.toggle("hidden", !!cur || session.film_status === "failed");
     $("free-box").classList.toggle("hidden", !cur);
     $("intro").textContent = cur ? cur.intro : "";
