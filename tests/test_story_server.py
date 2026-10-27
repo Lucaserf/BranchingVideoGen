@@ -1,60 +1,114 @@
+import json
+import threading
 import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
-from bvg.story import ACTS, StoryState
+from bvg.story import BEATS, StoryState
+from bvg.writer import FallbackWriter, LLMWriter, SimpleWriter, parse_json
 
 
-def test_story_fills_shots_from_choices_and_free_text():
-    s = StoryState("noir")
-    s.choose(0)
-    s.choose(free_text="a comet shaped like a key")
-    shots = s.shots(1)
-    assert len(shots) == 6
-    assert "a comet shaped like a key" in shots[0]["prompt"]
-    assert shots[0]["prompt"].endswith("35mm film grain")
-    assert "{" not in "".join(sh["prompt"] + sh["narration"] for sh in shots)
-    assert shots[1]["narration"].startswith("The courier")
+def _play(writer, state, answers):
+    writer.opening(state)
+    for act, answer in enumerate(answers):
+        assert state.current is not None
+        if isinstance(answer, str):
+            state.choose(free_text=answer)
+        else:
+            state.choose(answer)
+        writer.next_act(state, act)
+        writer.shots(state, act)
+    assert state.current is None
 
 
-def test_every_option_leaves_no_unfilled_fields():
-    for picks in [(0,) * 6, (1,) * 6, (2,) * 6]:
-        s = StoryState("anime")
-        for a, p in enumerate(picks):
-            s.choose(p)
-            text = "".join(sh["prompt"] + sh["narration"] for sh in s.shots(a))
-            assert "{" not in text, (a, p)
-    assert s.act == len(ACTS)
+def test_simple_writer_builds_prompts_from_answers():
+    s = StoryState("noir", shots_per_act=3)
+    _play(SimpleWriter(), s, [0, "a comet shaped like a key", 1, 0, 2, 1])
+    assert len(s.acts) == len(BEATS)
+    prompts = s.prompts(1)
+    assert len(prompts) == 3
+    assert any("a comet shaped like a key" in p["prompt"] for p in prompts)
+    assert all(p["prompt"].endswith("35mm film grain") for p in prompts)
+    assert s.acts[1].free and s.choices[1] == "a comet shaped like a key"
 
 
-def test_server_plays_a_short_film_in_mock_mode(tmp_path):
-    pytest.importorskip("fastapi")
-    pytest.importorskip("httpx")
-    from fastapi.testclient import TestClient
+def test_parse_json_tolerates_thinking_and_fences():
+    reply = '<think>{"no": 1}</think>Sure!\n```json\n{"a": {"b": 2}}\n```'
+    assert parse_json(reply) == {"a": {"b": 2}}
 
-    from bvg.config import load_config
-    from bvg.engine import Engine
-    from bvg.server import App, build
 
-    config = load_config()
-    config["film"]["shot_seconds"] = 1
-    config["server"]["outputs"] = str(tmp_path)
-    client = TestClient(build(App(config, Engine(config, mock=True), None)))
+class _FakeLLM(BaseHTTPRequestHandler):
+    """An OpenAI-compatible endpoint that answers from the prompt with canned JSON."""
+    calls: list = []
+    broken = False
 
-    sid = client.post("/api/sessions", json={"style": "comic", "length": "short"}).json()["id"]
-    assert client.post("/api/sessions", json={}).status_code == 409  # one viewer at a time
-    for act in range(6):
-        body = {"text": "a tiny dragon"} if act == 2 else {"option": 0}
-        assert client.post(f"/api/sessions/{sid}/choices", json=body).status_code == 200
-    for _ in range(200):
-        state = client.get(f"/api/sessions/{sid}").json()
-        if state["film_status"] in ("done", "failed"):
-            break
-        time.sleep(0.1)
-    assert state["film_status"] == "done", state["error"]
-    assert state["shots_done"] == state["shots_total"] == 18
-    assert client.get(state["film"]).status_code == 200
-    assert client.get(f"/files/{sid}/..%2Fsecret").status_code == 404
+    def log_message(self, *args):
+        pass
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        prompt = body["messages"][-1]["content"]
+        _FakeLLM.calls.append(prompt)
+        act = {"intro": "Rain hammers the glass dome of Vell.", "question": "Who are you?",
+               "options": [{"label": "A glassblower", "values": {"empathy": 1}},
+                           {"label": "A smuggler", "values": {"courage": 2, "order": -1}},
+                           {"label": "A cartographer", "values": {"curiosity": 9}}]}
+        if _FakeLLM.broken:
+            content = "I cannot write JSON today."
+        elif "shots that film beat" in prompt:
+            n = int(prompt.split("Write the ")[1].split()[0])
+            content = json.dumps({"shots": [{"prompt": f"Mara the glassblower, shot {i}", "narration": "Rain.",
+                                             "shows_hero": i % 2 == 0, "priority": 0.9} for i in range(n - 1)]})
+        elif "Start the story" in prompt:
+            content = json.dumps({"title": "The Glass Dome", "cast": {"world": "a city under a glass dome"},
+                                  "act": act})
+        else:
+            content = "<think>planning</think>" + json.dumps(
+                {"summary": "Mara leaves Vell.", "cast": {"Mara": "a tall glassblower in a red coat"},
+                 "answer_values": {"courage": 2}, "title": "Glass and Thunder", "act": act})
+        out = json.dumps({"choices": [{"message": {"content": content}}]}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(out)))
+        self.end_headers()
+        self.wfile.write(out)
+
+
+@pytest.fixture
+def fake_llm():
+    _FakeLLM.calls, _FakeLLM.broken = [], False
+    server = HTTPServer(("127.0.0.1", 0), _FakeLLM)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield {"base_url": f"http://127.0.0.1:{server.server_port}/v1", "model": "fake", "timeout_seconds": 5}
+    server.shutdown()
+
+
+def test_llm_writer_writes_text_choices_and_prompts(fake_llm):
+    s = StoryState("anime", shots_per_act=3, has_photo=True)
+    _play(LLMWriter(fake_llm), s, [1, "I sing to the storm", 0, 0, 0, 0])
+    assert s.title == "Glass and Thunder"
+    assert s.acts[0].text.intro.startswith("Rain") and s.acts[0].text.options[1].label == "A smuggler"
+    assert s.cast["Mara"].startswith("a tall glassblower")
+    # option values are clamped; free-text answers are scored by the writer
+    assert s.values["courage"] == 2 + 2 + 0 and s.values["curiosity"] == 0
+    prompts = s.prompts(0)
+    assert len(prompts) == 3 and prompts[2] == {**prompts[1], "index": 2}  # too few shots: last one repeated
+    assert prompts[0]["photo_prompt"] and prompts[1]["photo_prompt"] is None
+    assert "I sing to the storm" in _FakeLLM.calls[3]  # the answer reaches the next prompt
+    assert len(_FakeLLM.calls) == 1 + 2 * len(BEATS)
+
+
+def test_fallback_writer_finishes_the_story_when_the_llm_fails(fake_llm):
+    _FakeLLM.broken = True
+    writer = FallbackWriter(LLMWriter(fake_llm), SimpleWriter())
+    s = StoryState("comic", shots_per_act=2)
+    assert writer.opening(s) == "fallback"
+    for act in range(len(BEATS)):
+        s.choose(0)
+        assert writer.next_act(s, act) == "fallback"
+        writer.shots(s, act)
+    assert all(len(a.shots) == 2 for a in s.acts) and writer.failures == 1 + 2 * len(BEATS)
 
 
 def _client(tmp_path):
@@ -69,6 +123,35 @@ def _client(tmp_path):
     config["server"]["outputs"] = str(tmp_path)
     config["audio"]["music_dir"] = str(tmp_path / "no-music")
     return TestClient(build(App(config, Engine(config, mock=True), None)))
+
+
+def _answer(client, sid, body):
+    for _ in range(100):
+        state = client.get(f"/api/sessions/{sid}").json()
+        if state["current"]:
+            break
+        time.sleep(0.05)
+    assert state["current"]["options"], state
+    return client.post(f"/api/sessions/{sid}/choices", json=body)
+
+
+def test_server_plays_a_short_film_in_mock_mode(tmp_path):
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    client = _client(tmp_path)
+    sid = client.post("/api/sessions", json={"style": "comic", "length": "short"}).json()["id"]
+    assert client.post("/api/sessions", json={}).status_code == 409  # one viewer at a time
+    for act in range(6):
+        body = {"text": "a tiny dragon"} if act == 2 else {"option": 0}
+        assert _answer(client, sid, body).status_code == 200
+    assert client.post(f"/api/sessions/{sid}/choices", json={"option": 0}).status_code == 400  # story over
+    state = _wait(client, sid)
+    assert state["film_status"] == "done", state["error"]
+    assert state["shots_done"] == state["shots_total"] == 18
+    assert state["writer"] == "simple" and state["title"]
+    assert any("a tiny dragon" in a.get("answer", "") for a in state["story"])
+    assert client.get(state["film"]).status_code == 200
+    assert client.get(f"/files/{sid}/..%2Fsecret").status_code == 404
 
 
 def _wait(client, sid):
@@ -104,7 +187,7 @@ def test_film_with_photo_voice_music_and_model_picks(tmp_path):
     state = client.post("/api/sessions", json={**body, "photo_consent": True}).json()
     assert state["models"]["standard"] == "wan2.2-ti2v-5b" and state["photo"]
     for act in range(6):
-        client.post(f"/api/sessions/{state['id']}/choices", json={"option": 1})
+        assert _answer(client, state["id"], {"option": 1}).status_code == 200
     state = _wait(client, state["id"])
     assert state["film_status"] == "done", state["error"]
     film = tmp_path / state["id"] / "film.mp4"

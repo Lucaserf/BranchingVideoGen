@@ -40,6 +40,11 @@
   video { width: 100%; border-radius: 10px; background: #000; }
   .values div { display: grid; grid-template-columns: 90px 1fr 24px; gap: 8px; align-items: center; margin: 4px 0; }
   .hidden { display: none; }
+  .intro { font-size: 19px; line-height: 1.6; margin: 8px 0 16px; max-width: 720px; }
+  .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--muted);
+    border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite; vertical-align: -1px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .recap p { margin: 6px 0; } .recap .answer { color: var(--accent); }
   select { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px;
     padding: 10px; font: inherit; width: 100%; }
   label.field { display: block; }
@@ -109,9 +114,11 @@
   <div id="play" class="hidden">
     <section>
       <div class="eyebrow" id="act-label"></div>
+      <p id="intro" class="intro"></p>
+      <p id="writing" class="muted hidden"><span class="spinner"></span> The story is being written…</p>
       <h2 id="question"></h2>
       <div class="grid" id="options"></div>
-      <section>
+      <section id="free-box">
         <textarea id="free" maxlength="200" placeholder="Or write your own…"></textarea>
         <div class="row" style="margin-top:8px"><button class="primary" id="free-go">Choose this</button></div>
       </section>
@@ -246,17 +253,25 @@ async function choose(body) {
 }
 $("free-go").onclick = () => { const t = $("free").value.trim(); if (t) choose({ text: t }); };
 
+let shownKey = null;
+const stateKey = (s) => `${s.act}:${s.current ? 1 : 0}:${s.film_status}`;
+
 function show() {
+  shownKey = stateKey(session);
   $("start").classList.add("hidden");
   $("progress").classList.remove("hidden");
-  const total = meta.acts.length;
+  const total = meta.beats.length;
   if (session.act < total) {
     $("play").classList.remove("hidden");
-    const act = meta.acts[session.act];
-    $("act-label").textContent = `Act ${session.act + 1} of ${total} · ${act.title}`;
-    $("question").textContent = act.question;
+    const cur = session.current;
+    $("act-label").textContent = `${session.title ? session.title + " · " : ""}Act ${session.act + 1} of ${total} · ${
+      meta.beats[session.act].title}`;
+    $("writing").classList.toggle("hidden", !!cur || session.film_status === "failed");
+    $("free-box").classList.toggle("hidden", !cur);
+    $("intro").textContent = cur ? cur.intro : "";
+    $("question").textContent = cur ? cur.question : "";
     $("options").innerHTML = "";
-    act.options.forEach((label, i) => {
+    (cur ? cur.options : []).forEach((label, i) => {
       const b = document.createElement("button");
       b.className = "card"; b.textContent = label; b.onclick = () => choose({ option: i });
       $("options").appendChild(b);
@@ -281,17 +296,21 @@ function render() {
   if (s.film && $("film").classList.contains("hidden")) {
     $("film").src = s.film; $("film").classList.remove("hidden");
     $("premiere-title").textContent = s.wait_after_last_choice != null
-      ? `Your film, ready ${minutes(s.wait_after_last_choice)} after your last choice` : "Your film";
+      ? `${s.title || "Your film"}, ready ${minutes(s.wait_after_last_choice)} after your last choice`
+      : (s.title || "Your film");
   }
   if (s.film_status === "failed") $("premiere-title").textContent = "Something went wrong while making the film";
   if (s.error) $("error").textContent = s.error;
-  if (s.act >= meta.acts.length) {
+  if (s.act >= meta.beats.length) {
+    if (s.title) $("premiere-title").dataset.title = s.title;
     const max = Math.max(1, ...Object.values(s.values).map(Math.abs));
     $("summary").innerHTML = `
-      <div class="card"><strong>Your choices</strong><ol class="muted">${s.choices.map((c) => `<li>${esc(c)}</li>`).join("")}</ol></div>
+      <div class="card recap"><strong>${esc(s.title || "Your story")}</strong>${s.story.map((a) => `
+        <p class="muted">${esc(a.intro)}</p><p class="answer">→ ${esc(a.answer)}</p>`).join("")}</div>
       <div class="card values"><strong>Your fingerprint</strong>${Object.entries(s.values).map(([k, v]) => `
         <div><span class="muted">${k}</span><div class="bar"><div style="width:${100 * Math.max(0, v) / max}%"></div></div><span>${v}</span></div>`).join("")}
         <p class="muted">Style: ${meta.styles[s.style]} · ${s.length} · ${s.profile}<br>
+          Story written by: ${s.writer === "llm" ? "the LLM" : s.writer === "fallback" ? "the LLM, with placeholder text where it failed" : "placeholder writer (no LLM)"}<br>
           Models: ${esc(s.models.keyframe)}, ${esc(s.models.standard)}${s.photo ? `, ${esc(s.models.photo)} (your photo)` : ""}<br>
           Sound: ${s.voice ? esc(meta.voices[s.voice] || s.voice) : "no narration"}${s.music ? ", music" : ""}</p>
         <button class="primary" onclick="store.set(null); location.reload()">Make another</button></div>`;
@@ -301,9 +320,12 @@ function render() {
 function poll() {
   clearInterval(pollTimer);
   pollTimer = setInterval(async () => {
-    try { session = await api(`/api/sessions/${session.id}`); render(); } catch {}
+    try {
+      session = await api(`/api/sessions/${session.id}`);
+      stateKey(session) !== shownKey ? show() : render();
+    } catch {}
     if (session.film_status === "done" || session.film_status === "failed") clearInterval(pollTimer);
-  }, 2000);
+  }, 1500);
 }
 
 init().catch((e) => { $("error").textContent = e.message; });

@@ -10,6 +10,10 @@ last act the shots are stitched, and narration and music are mixed in.
 
 Each film can pick its own models (image, video, quality shots, photo edit), a
 narration voice, music, and a photo of the protagonist.
+
+The story itself is written as the viewer plays (bvg.writer): an LLM writes each
+act's scene, question and choices from the answers so far, then the act's shot
+prompts. Writer calls run on their own thread so they never block the GPU queue.
 """
 
 from __future__ import annotations
@@ -44,13 +48,14 @@ from bvg.config import Costs, load_config, load_costs, load_profile
 from bvg.engine import Engine
 from bvg.models import ModelPolicyError, apply_overrides, models_by_kind, select_model, stage_settings
 from bvg.planner import Shot, plan_film
-from bvg.story import ACTS, STYLES, StoryState, acts_public
+from bvg.story import BEATS, STYLES, StoryState, beats_public
+from bvg.writer import make_writer
 
 log = logging.getLogger("bvg.server")
 STATIC = Path(__file__).resolve().parent / "static"
 
-# Which shots of each act a short film keeps.
-LENGTHS = {"full": (0, 1, 2, 3, 4, 5), "short": (0, 3, 5)}
+# Shots per act for each film length.
+LENGTHS = {"full": 6, "short": 3}
 KEYFRAME, VIDEO, FINISH = 0, 1, 2  # job priorities: lower runs first
 MODEL_STAGES = ("keyframe", "standard", "hero", "photo")
 MAX_PHOTO_BYTES = 12 * 1024 * 1024
@@ -88,6 +93,7 @@ class Session:
     last_choice_at: float | None = None
     film_status: str = "waiting"  # waiting -> stitching -> done | failed
     film_ready_at: float | None = None
+    writer_steps: list[str] = field(default_factory=list)  # "llm" or "fallback", per writer call
     error: str | None = None
 
     @property
@@ -113,9 +119,11 @@ class SessionIn(BaseModel):
 
 
 class App:
-    def __init__(self, config: dict, engine: Engine, bench: str | None):
+    def __init__(self, config: dict, engine: Engine, bench: str | None, writer=None):
         self.config = config
         self.engine = engine
+        self.writer = writer or make_writer(config.get("story", {}), mock=engine.mock)
+        self.writer_jobs: queue.Queue = queue.Queue()
         self.bench = bench
         self.costs = load_costs(config, bench)
         self.audio = config.get("audio", {})
@@ -129,6 +137,7 @@ class App:
         self.seq = itertools.count()
         self.lock = threading.Lock()
         threading.Thread(target=self._worker, daemon=True).start()
+        threading.Thread(target=self._writer_worker, daemon=True).start()
 
     # --- sessions ---------------------------------------------------------
 
@@ -155,12 +164,14 @@ class App:
             if voice is not None and voice not in audio.VOICES:
                 raise HTTPException(400, f"unknown voice {voice!r}")
             profile = load_profile(self.config, body.profile)
-            keep = LENGTHS[body.length]
-            planned = [Shot(act=a, index=i, priority=t.priority)
-                       for a, act in enumerate(ACTS) for i, t in enumerate(act.shots) if i in keep]
+            n = LENGTHS[body.length]
+            # Shot priorities aren't written yet; plan with the first and last shot of each act weighted higher.
+            planned = [Shot(act=a, index=i, priority=0.8 if i in (0, n - 1) else 0.5)
+                       for a in range(len(BEATS)) for i in range(n)]
             plan = plan_film(planned, costs, profile, self.config["film"]["seconds_per_choice"])
             sid = uuid.uuid4().hex[:10]
-            session = Session(id=sid, story=StoryState(style=body.style), profile=body.profile, length=body.length,
+            story = StoryState(style=body.style, shots_per_act=n, has_photo=photo is not None)
+            session = Session(id=sid, story=story, profile=body.profile, length=body.length,
                               shots={(s.act, s.index): ShotState(s.act, s.index, s.render_type) for s in plan.shots},
                               dir=self.outputs / sid, settings=settings, costs=costs, voice=voice,
                               music=body.music, captions=body.captions, photo=photo)
@@ -168,6 +179,7 @@ class App:
             if photo is not None:
                 photo.save(session.dir / "photo.png")
             self.sessions[sid] = session
+            self.writer_jobs.put((sid, -1))
             log.info("session %s: %s, %s, %s, models %s, voice %s, photo %s, plan %s", sid, body.style,
                      body.profile, body.length, {k: v.get("model_name") for k, v in settings.items()}, voice,
                      photo is not None, plan.counts())
@@ -215,29 +227,54 @@ class App:
     def choose(self, sid: str, body: ChoiceIn) -> int:
         session = self.get(sid)
         with self.lock:
-            if session.story.act >= len(ACTS):
+            if session.story.act >= len(BEATS):
                 raise HTTPException(400, "the story is already complete")
+            current = session.story.current
+            if current is None:
+                raise HTTPException(409, "the next act is still being written")
             if body.option is None and not (body.text and body.text.strip()):
                 raise HTTPException(400, "pick an option or write your own")
-            if body.option is not None and not 0 <= body.option < len(ACTS[session.story.act].options):
+            if body.option is not None and not 0 <= body.option < len(current.options):
                 raise HTTPException(400, "no such option")
             act = session.story.choose(body.option, body.text)
             session.last_choice_at = time.time()
-            for spec in session.story.shots(act):
-                shot = session.shots.get((act, spec["index"]))
-                if shot is None:
-                    continue  # not part of a short film
-                shot.prompt, shot.narration, shot.status = spec["prompt"], spec["narration"], "queued"
-                shot.photo_prompt = spec["photo_prompt"]
-                if session.voice:
-                    session.narration_jobs[(act, shot.index)] = self.cpu.submit(
-                        self.narrator.speak, shot.narration, session.voice)
-                self.jobs.put((KEYFRAME, next(self.seq), sid, act, shot.index))
-                self.jobs.put((VIDEO, next(self.seq), sid, act, shot.index))
-            if session.story.act == len(ACTS):
-                self.jobs.put((FINISH, next(self.seq), sid, -1, -1))
+            self.writer_jobs.put((sid, act))
             self._save(session)
             return act
+
+    # --- writer -----------------------------------------------------------
+
+    def _writer_worker(self) -> None:
+        while True:
+            sid, answered = self.writer_jobs.get()
+            session = self.sessions[sid]
+            try:
+                if answered < 0:
+                    session.writer_steps.append(self.writer.opening(session.story) or "llm")
+                else:
+                    self._write_act(session, answered)
+            except Exception as e:
+                log.exception("writer failed")
+                session.error = f"The story could not be written: {e}"
+                session.film_status = "failed"
+            self._save(session)
+
+    def _write_act(self, session: Session, act: int) -> None:
+        """After an answer: write the next act (the viewer is waiting), then this act's shots (the GPU is)."""
+        session.writer_steps.append(self.writer.next_act(session.story, act) or "llm")
+        session.writer_steps.append(self.writer.shots(session.story, act) or "llm")
+        for spec in session.story.prompts(act):
+            shot = session.shots[(act, spec["index"])]
+            shot.prompt, shot.narration, shot.status = spec["prompt"], spec["narration"], "queued"
+            shot.photo_prompt = spec["photo_prompt"]
+            if session.voice:
+                session.narration_jobs[(act, shot.index)] = self.cpu.submit(
+                    self.narrator.speak, shot.narration, session.voice)
+            self.jobs.put((KEYFRAME, next(self.seq), session.id, act, shot.index))
+            self.jobs.put((VIDEO, next(self.seq), session.id, act, shot.index))
+        log.info("session %s: act %d written (%s)", session.id, act + 1, ", ".join(session.writer_steps[-2:]))
+        if act == len(BEATS) - 1:
+            self.jobs.put((FINISH, next(self.seq), session.id, -1, -1))
 
     def eta(self, session: Session) -> float:
         """Seconds of GPU work left for a session, from the planner's per-shot costs."""
@@ -260,9 +297,18 @@ class App:
                           "narration": s.narration, "seconds": s.seconds,
                           "keyframe": url(kf.name) if kf.exists() else None})
         done = sum(s.status == "done" for s in session.shots.values())
+        story = session.story
+        current = story.current
         return {
-            "id": session.id, "style": session.story.style, "profile": session.profile, "length": session.length,
-            "act": session.story.act, "choices": session.story.choices, "values": session.story.values,
+            "id": session.id, "style": story.style, "profile": session.profile, "length": session.length,
+            "title": story.title, "act": story.act, "choices": story.choices, "values": story.values,
+            "current": None if current is None else {
+                "beat": BEATS[story.act].title, "intro": current.intro, "question": current.question,
+                "options": [o.label for o in current.options]},
+            "writing": story.act < len(BEATS) and current is None and session.film_status != "failed",
+            "story": [{"beat": BEATS[i].title, "intro": a.text.intro, "answer": a.answer}
+                      for i, a in enumerate(story.acts) if a.answer is not None],
+            "writer": next((w for w in ("fallback", "simple", "llm") if w in session.writer_steps), None),
             "models": {k: v.get("model_name") for k, v in session.settings.items() if k != "pan"},
             "voice": session.voice, "music": session.music, "photo": session.photo is not None,
             "shots": shots, "shots_done": done, "shots_total": len(session.shots),
@@ -360,7 +406,7 @@ def build(app_state: App) -> FastAPI:
                     .get("model") for stage in MODEL_STAGES}
         narration = app_state.audio.get("narration", "kokoro")
         narration_ok = app_state.engine.mock or (narration != "none" and importlib.util.find_spec("kokoro") is not None)
-        return {"styles": {k: v["label"] for k, v in STYLES.items()}, "acts": acts_public(),
+        return {"styles": {k: v["label"] for k, v in STYLES.items()}, "beats": beats_public(),
                 "models": models_by_kind(config), "default_models": defaults,
                 "voices": audio.VOICES if narration_ok else {},
                 "default_voice": app_state.audio.get("voice", "af_heart") if narration_ok else None,
@@ -401,6 +447,8 @@ def main() -> None:
     parser.add_argument("--model", action="append", default=[], metavar="STAGE=MODEL")
     parser.add_argument("--mock", action="store_true", help="placeholder images and pans, no GPU needed")
     parser.add_argument("--preload", action="store_true", help="load the models at startup instead of on first use")
+    parser.add_argument("--writer", choices=("llm", "simple"), default=None,
+                        help="who writes the story (default: story.writer in the config; simple with --mock)")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args()
@@ -408,11 +456,15 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     config = apply_overrides(load_config(args.config) if args.config else load_config(), args.model)
     engine = Engine(config, mock=args.mock)
+    story_settings = dict(config.get("story", {}))
+    if args.writer:
+        story_settings["writer"] = args.writer
+    writer = make_writer(story_settings, mock=args.mock and args.writer != "llm")
     if args.preload:
         engine.preload([stage_settings(config, "keyframe"), stage_settings(config, "standard")])
     import uvicorn
 
-    uvicorn.run(build(App(config, engine, args.bench)), host=args.host, port=args.port)
+    uvicorn.run(build(App(config, engine, args.bench, writer)), host=args.host, port=args.port)
 
 
 if __name__ == "__main__":

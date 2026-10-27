@@ -6,7 +6,7 @@ The design and the options considered are in the project doc "Branching story vi
 
 ## Status
 
-This first piece measures what the L40 can actually render and plans each film around a target waiting time. The story engine, GPU server and web app come next.
+A playable demo: an LLM writes each viewer's story, the L40 renders it while they play, with narration, music and an optional photo of the protagonist. Tested end to end on the L40 with templates; the LLM writer is tested with a fake endpoint so far.
 
 ## Demo
 
@@ -30,7 +30,7 @@ Install the narration voice with `pip install -e ".[audio]"`.
 
 How it works:
 
-- **Story** (`bvg/story.py`): six fixed acts of the hero's journey, three options per act plus "write your own". Each act has six shot templates that the choices fill in, with a narration line per shot. Each option also moves a four-axis value fingerprint (courage, empathy, curiosity, order).
+- **Story** (`bvg/story.py`, `bvg/writer.py`): the six beats of the hero's journey are the fixed skeleton, the same for every viewer so runs can be compared. Everything inside them is written as the viewer plays: an LLM writes each act's scene, question and three choices from the answers so far (the viewer can also write their own), then the act's shot prompts and narration. It keeps a short cast list (visual descriptions of the hero, places and recurring characters) and repeats it in every image prompt so they stay recognizable. Each choice also moves a four-axis value fingerprint (courage, empathy, curiosity, order); the LLM scores the options it writes and any free-text answer.
 - **Server** (`bvg/server.py`): FastAPI plus one GPU worker thread. One viewer holds the GPU at a time (released when the film is done or after 15 idle minutes). When an act is locked its keyframes render first, so stills appear within seconds, then its video shots. The planner decides at the start which shots are video and which are pans.
 - **Film** (`bvg/engine.py`): every shot is cropped to 768x512 at 24 fps with its narration burned in as a caption, then the shots are joined with ffmpeg.
 
@@ -42,10 +42,25 @@ Choices made for the demo (all easy to change):
 | Video | LTX-Video 0.9.7 distilled | 20 s per 5 s shot, the only measured model fast enough for every profile |
 | Hero shots | Effectively off | Wan 2.2 A14B took 1455 s per shot; the planner only fits 2 in `quality` |
 | GPU sharing | Both models loaded with CPU offload | FLUX (32 GB) and LTX (38.5 GB) don't fit in 48 GB together, and reloading per act would take minutes |
-| Story text | Templates, no LLM | Works offline and keeps the GPU for video; an LLM can rewrite shot prompts later |
+| Story text | A local LLM (Qwen3 8B through Ollama) writes text, choices and prompts | Every film differs in more than the six answers; a plain fallback writer takes over if the LLM fails |
 | Sound | Kokoro narration on the CPU, music files or a synthesized pad | Keeps the GPU free for video; no music model yet |
 | Character consistency | Only with an uploaded photo | Without a photo each shot is drawn from the prompt alone, so the hero changes look between shots |
 | Film length | Full (36 shots, 3 min) or short (18 shots, 90 s) | Short makes testing faster |
+
+### The story writer
+
+The writer talks to any OpenAI-compatible chat endpoint, set in the `story:` section of `configs/profiles.yaml`. The default is Ollama on the same machine:
+
+```bash
+curl -fsSL https://ollama.com/install.sh | sh   # or a user-level install, see ollama.com
+ollama pull qwen3:8b
+python -m bvg.server --host 0.0.0.0             # uses story.base_url, http://127.0.0.1:11434/v1
+```
+
+- **Any model or server** works: change `model` and `base_url` (vLLM, llama.cpp server, LM Studio, or a hosted API with its key in `BVG_LLM_API_KEY`). Uncensored community fine-tunes from Ollama or Hugging Face fit here too.
+- **GPU memory**: an 8B model takes about 6 GB of VRAM next to the video models. To keep the GPU entirely for video, run it on the CPU with `extra_body: {options: {num_gpu: 0}}` (slower: tens of seconds per act).
+- **Timing**: after each choice the writer makes two calls on its own thread, the next act's text (what the viewer waits for) and the shot prompts for the act just chosen (what the GPU waits for).
+- **Without an LLM**: `--writer simple` uses plain placeholder text and is the default with `--mock`; `python -m bvg.server --mock --writer llm` tests the real writer with placeholder images. If an LLM call fails, the simple writer covers that step and the premiere shows it.
 
 ## Layout
 

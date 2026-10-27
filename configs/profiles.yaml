@@ -70,6 +70,23 @@ render_types:
     # `balanced`; needs a 4-step distillation LoRA to be useful.
     est_seconds_per_shot: 1455
 
+# Who writes the story: each act's scene, question and choices, then its shot
+# prompts and narration, from the viewer's answers. Any OpenAI-compatible chat
+# endpoint works: Ollama (http://127.0.0.1:11434/v1), vLLM, llama.cpp server, or a
+# hosted API (key in the env var named by api_key_env). If a call fails, the simple
+# writer (plain placeholder text, no model) fills in so the film still finishes.
+story:
+  writer: llm                 # llm or simple
+  base_url: http://127.0.0.1:11434/v1
+  model: qwen3:8b
+  api_key_env: BVG_LLM_API_KEY
+  language: English
+  temperature: 0.9
+  max_tokens: 2500
+  timeout_seconds: 120
+  fallback_to_simple: true
+  extra_body: {}              # extra request fields, e.g. {"think": false} or {"options": {"num_gpu": 0}} for Ollama
+
 # Keyframes for shots with the protagonist when the viewer uploads a photo: an
 # image-edit model redraws the scene with that person in it.
 photo:
