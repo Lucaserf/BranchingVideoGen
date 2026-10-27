@@ -1,0 +1,447 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Your Film</title>
+<style>
+  :root {
+    --bg: #0f0e13; --panel: #1a1820; --line: #2c2934; --text: #ece8f1; --muted: #9a94a6;
+    --accent: #f2b544; --accent-ink: #1a1308; --ok: #6fcf97; --bad: #eb5757;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.5 system-ui, sans-serif; }
+  main { max-width: 960px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 28px; margin: 0 0 4px; letter-spacing: .5px; }
+  h2 { font-size: 22px; margin: 0 0 8px; }
+  .muted { color: var(--muted); }
+  .eyebrow { color: var(--accent); font-size: 13px; text-transform: uppercase; letter-spacing: 1.5px; }
+  section { margin-top: 24px; }
+  .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+  button.card, .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; color: var(--text);
+    padding: 16px; text-align: left; font: inherit; cursor: pointer; }
+  button.card:hover { border-color: var(--accent); }
+  button.link { background: none; border: 0; color: var(--accent); cursor: pointer; font: inherit; padding: 0 4px; }
+  .shots-row { gap: 12px; align-items: center; flex-wrap: wrap; }
+  #shots { flex: 1; min-width: 160px; accent-color: var(--accent); }
+  #shots-n { width: 72px; background: var(--panel); color: var(--text); border: 1px solid var(--line);
+             border-radius: 8px; padding: 6px 8px; font: inherit; }
+  button.card.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border: 0; border-radius: 8px; padding: 12px 22px;
+    font: 600 16px system-ui, sans-serif; cursor: pointer; }
+  button.primary:disabled { opacity: .5; cursor: default; }
+  textarea { width: 100%; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px;
+    padding: 12px; font: inherit; resize: vertical; min-height: 56px; }
+  .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .bar { height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; }
+  .bar > div { height: 100%; background: var(--accent); width: 0; transition: width .5s; }
+  .strip { display: grid; gap: 6px; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); }
+  .thumb { position: relative; aspect-ratio: 3 / 2; background: var(--panel); border-radius: 6px; overflow: hidden;
+    border: 1px solid var(--line); }
+  .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .thumb .tag { position: absolute; left: 4px; bottom: 4px; font-size: 11px; background: rgba(0,0,0,.7);
+    padding: 1px 6px; border-radius: 4px; }
+  .tag.done { color: var(--ok); } .tag.failed { color: var(--bad); }
+  video { width: 100%; border-radius: 10px; background: #000; }
+  .values div { display: grid; grid-template-columns: 90px 1fr 24px; gap: 8px; align-items: center; margin: 4px 0; }
+  .hidden { display: none; }
+  .intro { font-size: 19px; line-height: 1.6; margin: 8px 0 16px; max-width: 720px; }
+  .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--muted);
+    border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite; vertical-align: -1px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .recap p { margin: 6px 0; } .recap .answer { color: var(--accent); }
+  select { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px;
+    padding: 10px; font: inherit; width: 100%; }
+  label.field { display: block; }
+  label.field span { display: block; color: var(--muted); font-size: 14px; margin-bottom: 4px; }
+  .check { display: flex; gap: 8px; align-items: center; }
+  details summary { cursor: pointer; font-weight: 600; font-size: 18px; }
+  #models { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+  #photo-preview { width: 120px; height: 120px; object-fit: cover; border-radius: 10px; border: 1px solid var(--line); }
+  .error { color: var(--bad); }
+  #log { background: #000; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin: 8px 0 0;
+    max-height: 320px; overflow: auto; font: 12px/1.45 ui-monospace, monospace; color: var(--muted);
+    white-space: pre-wrap; word-break: break-word; }
+  #log .WARNING { color: var(--accent); } #log .ERROR, #log .CRITICAL { color: var(--bad); }
+  #log-box summary { font-size: 15px; }
+</style>
+</head>
+<body>
+<main>
+  <div class="eyebrow">A film made only for you</div>
+  <h1>Your Film</h1>
+  <p class="muted" id="subtitle">Make the choices, and a film made from them renders while you play.</p>
+  <p class="muted" style="font-size:13px"><span id="memline"></span>
+    <button class="link" id="free-mem" title="Unload every model this server and Ollama hold">Free memory</button></p>
+
+  <div id="start">
+    <section>
+      <h2>Pick a look</h2>
+      <div class="grid" id="styles"></div>
+    </section>
+    <section>
+      <h2>Film length</h2>
+      <p class="muted" id="shots-help"></p>
+      <div class="row shots-row">
+        <input type="range" id="shots" step="1">
+        <input type="number" id="shots-n" step="1">
+        <span id="shots-out"></span>
+      </div>
+    </section>
+    <section>
+      <h2>Rendering profile</h2>
+      <p class="muted">How long you are willing to wait after your last choice. Longer waits buy more real video shots and fewer camera pans over stills.</p>
+      <div class="grid" id="profiles"></div>
+    </section>
+    <section>
+      <h2>Your protagonist <span class="muted" style="font-weight:400;font-size:16px">(optional)</span></h2>
+      <p class="muted">Upload a photo and the main character of every shot will have that face.</p>
+      <div class="row">
+        <img id="photo-preview" class="hidden" alt="">
+        <div>
+          <input type="file" id="photo" accept="image/*">
+          <label class="check" style="margin-top:8px"><input type="checkbox" id="photo-consent">
+            This is me, or I have this person's permission</label>
+          <button class="card hidden" id="photo-clear" style="margin-top:8px;padding:6px 12px">Remove photo</button>
+        </div>
+      </div>
+    </section>
+    <section>
+      <h2>Sound</h2>
+      <div class="grid">
+        <label class="field"><span>Narration voice</span><select id="voice"></select></label>
+        <div class="card"><label class="check"><input type="checkbox" id="music" checked> Music</label>
+          <label class="check"><input type="checkbox" id="captions" checked> Captions</label>
+          <div class="muted" id="music-note" style="font-size:14px"></div></div>
+      </div>
+    </section>
+    <section>
+      <details>
+        <summary>Models</summary>
+        <p class="muted">A model loads the first time a film uses it, which can take a few minutes. Times are per image or per 5-second shot on the L40.</p>
+        <div class="grid" id="models"></div>
+      </details>
+    </section>
+    <section>
+      <div class="card" id="forecast"><span class="muted">Checking memory…</span></div>
+    </section>
+    <section class="row">
+      <button class="primary" id="begin">Begin</button>
+      <span class="muted" id="busy"></span>
+    </section>
+  </div>
+
+  <div id="play" class="hidden">
+    <section>
+      <div class="eyebrow" id="act-label"></div>
+      <p id="intro" class="intro"></p>
+      <p id="writing" class="muted hidden"><span class="spinner"></span> The story is being written…</p>
+      <h2 id="question"></h2>
+      <div class="grid" id="options"></div>
+      <section id="free-box">
+        <textarea id="free" maxlength="200" placeholder="Or write your own…"></textarea>
+        <div class="row" style="margin-top:8px"><button class="primary" id="free-go">Choose this</button></div>
+      </section>
+    </section>
+  </div>
+
+  <div id="premiere" class="hidden">
+    <section>
+      <div class="eyebrow">Premiere</div>
+      <h2 id="premiere-title">Your film is being developed</h2>
+      <video id="film" class="hidden" controls playsinline></video>
+    </section>
+    <section class="grid" id="summary" style="grid-template-columns: repeat(auto-fit, minmax(260px, 1fr))"></section>
+  </div>
+
+  <section id="progress" class="hidden">
+    <div class="row" style="justify-content:space-between"><span id="progress-text" class="muted"></span>
+      <span id="eta" class="muted"></span></div>
+    <div class="bar" style="margin:8px 0 12px"><div id="progress-bar"></div></div>
+    <div class="strip" id="strip"></div>
+    <details id="log-box" open style="margin-top:16px">
+      <summary>Server log</summary>
+      <pre id="log"></pre>
+    </details>
+  </section>
+  <p class="error" id="error"></p>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (t) => String(t).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+let meta = null, session = null, pick = { style: "animated", shots: 36, profile: "fast" }, pollTimer = null;
+let photo = null;
+const STAGES = [["story", "llm", "Story writer (LLM)"], ["keyframe", "t2i", "Image model (stills)"], ["standard", "i2v", "Video model"],
+                ["hero", "i2v", "Quality shots model"], ["photo", "edit", "Photo model (your face in the scene)"]];
+
+const store = {
+  get() { try { return localStorage.getItem("bvg-session"); } catch { return null; } },
+  set(v) { try { v ? localStorage.setItem("bvg-session", v) : localStorage.removeItem("bvg-session"); } catch {} },
+};
+
+async function api(path, body) {
+  const res = await fetch(path, body ? { method: "POST", headers: { "Content-Type": "application/json" },
+                                         body: JSON.stringify(body) } : {});
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw Object.assign(new Error(typeof data.detail === "string" ? data.detail : "request failed"),
+                                    { status: res.status, detail: data.detail });
+  return data;
+}
+
+function cards(container, entries, key, describe) {
+  container.innerHTML = "";
+  for (const [value, label] of entries) {
+    const b = document.createElement("button");
+    b.className = "card" + (pick[key] === value ? " selected" : "");
+    b.innerHTML = `<strong>${label}</strong>${describe ? `<div class="muted">${describe(value)}</div>` : ""}`;
+    b.onclick = () => { pick[key] = value; cards(container, entries, key, describe); updateForecast(); };
+    container.appendChild(b);
+  }
+}
+
+let forecastTimer = null;
+function updateForecast() {
+  if (!meta) return;
+  clearTimeout(forecastTimer);
+  forecastTimer = setTimeout(async () => {
+    const models = {};
+    for (const sel of document.querySelectorAll("#models select")) models[sel.dataset.stage] = sel.value;
+    try {
+      renderForecast(await api("/api/memory/forecast", { models, profile: pick.profile, shots: pick.shots, photo: !!photo }));
+    } catch (e) {
+      $("forecast").innerHTML = `<span class="error">${esc(e.message)}</span>`;
+    }
+  }, 250);
+}
+
+function renderForecast(f) {
+  const gb = (v) => v == null ? "?" : `${v} GB`;
+  const mode = f.residency === "sequential" ? "one model in memory at a time" : "the film's models kept in RAM";
+  $("forecast").innerHTML = `<strong>Memory forecast</strong> <span class="muted">(${mode})</span>
+    <div class="muted">Peak GPU ${gb(f.peak_vram_gb)} of ${gb(f.vram_budget_gb)} usable · peak RAM ${gb(f.peak_ram_gb)} of ${gb(f.ram_budget_gb)} free</div>
+    <div class="muted">Loads ${f.models.map((m) => `${esc(m.model)} (${m.vram_gb} GB GPU, ${m.ram_gb} GB RAM)`).join(", then ")}${
+      f.llm ? `; the writer ${esc(f.llm.model)} takes ${f.llm.gb} GB on the ${f.llm.device.toUpperCase()}` : ""}</div>
+    <div class="muted">Shots planned: ${Object.entries(f.plan || {}).filter(([, n]) => n).map(([k, n]) => `${n} ${k}`).join(", ")}</div>
+    ${f.fits ? `<div style="color:var(--ok)">Fits in memory</div>`
+             : f.warnings.map((w) => `<div class="error">${esc(w)}</div>`).join("") +
+               (meta.mock ? `<div class="muted">Mock mode loads no models, so you can still start.</div>` : "")}`;
+  $("begin").disabled = !f.fits && !meta.mock;
+}
+
+$("free-mem").onclick = async () => {
+  try {
+    const r = await api("/api/memory/free", {});
+    $("error").textContent = r.ollama_unloaded.length ? `Freed; Ollama unloaded ${r.ollama_unloaded.join(", ")}.` : "";
+  } catch (e) { $("error").textContent = e.message; }
+  pollMemory();
+};
+
+async function pollMemory() {
+  try {
+    const m = await api("/api/memory"), n = m.now, parts = [];
+    if (n.gpu) parts.push(`GPU ${(n.gpu.total_gb - n.gpu.free_gb).toFixed(1)} / ${n.gpu.total_gb.toFixed(0)} GB used`);
+    if (n.ram) parts.push(`RAM ${(n.ram.total_gb - n.ram.free_gb).toFixed(1)} / ${n.ram.total_gb.toFixed(0)} GB used`);
+    parts.push(m.loaded.length ? `loaded: ${m.loaded.map(esc).join(", ")}` : "no model loaded");
+    for (const l of n.llm || []) parts.push(`LLM ${esc(l.name)} ${l.size_gb.toFixed(1)} GB`);
+    for (const p of n.gpu_processes || []) parts.push(`${p.this_server ? "this server" : `${esc(p.name)} (pid ${p.pid})`} holds ${p.gb.toFixed(1)} GB of GPU`);
+    $("memline").innerHTML = "Server memory: " + parts.join(" · ");
+  } catch { /* the server may be restarting */ }
+}
+
+const minutes = (s) => s < 90 ? `${Math.max(0, Math.round(s))} s` : `${Math.round(s / 60)} min`;
+
+async function init() {
+  meta = await api("/api/meta");
+  if (meta.mock) $("subtitle").textContent += " (mock mode: placeholder images, no GPU)";
+  cards($("styles"), Object.entries(meta.styles), "style");
+  const sh = meta.shots;
+  pick.shots = sh.shots;
+  $("shots-help").textContent = `Each shot is one image prompt and ${sh.shot_seconds} seconds of film, ` +
+    `spread across the story.`;
+  const setShots = (v) => {
+    v = Math.max(sh.min_shots, Math.min(sh.max_shots, Math.round(Number(v) || sh.shots)));
+    pick.shots = v;
+    $("shots").value = $("shots-n").value = v;
+    const secs = v * sh.shot_seconds;
+    $("shots-out").textContent = `shots · ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")} of film`;
+    updateForecast();
+  };
+  for (const id of ["shots", "shots-n"]) {
+    Object.assign($(id), { min: sh.min_shots, max: sh.max_shots });
+    $(id).oninput = (e) => setShots(e.target.value);
+  }
+  setShots(sh.shots);
+  cards($("profiles"), Object.entries(meta.profiles).map(([k, m]) => [k, k[0].toUpperCase() + k.slice(1)]), "profile",
+        (k) => `Ready about ${meta.profiles[k]} min after your last choice`);
+  $("voice").innerHTML = `<option value="off">No narration</option>` + Object.entries(meta.voices)
+    .map(([id, label]) => `<option value="${id}" ${id === meta.default_voice ? "selected" : ""}>${esc(label)}</option>`).join("");
+  if (!Object.keys(meta.voices).length) $("voice").innerHTML = `<option value="off">Narration not installed on this server</option>`;
+  $("music-note").textContent = meta.music_files.length ? `${meta.music_files.length} music track(s) available`
+                                                        : "Soft synthesized music (add tracks to assets/music)";
+  $("models").innerHTML = STAGES.map(([stage, kind, label]) => `
+    <label class="field"><span>${label}</span><select data-stage="${stage}">${(meta.models[kind] || []).map((m) => `
+      <option value="${m.name}" ${m.name === meta.default_models[stage] ? "selected" : ""}>${esc(m.name)}${
+        m.est_seconds ? ` · ~${m.est_seconds} s` : ""}${m.vram_gb ? ` · ~${m.vram_gb} GB` : ""}${
+        m.uncensored ? " · uncensored" : ""}${m.permissive ? "" : " · restricted license"}</option>`).join("")}
+    </select></label>`).join("");
+  $("models").onchange = updateForecast;
+  updateForecast();
+  pollMemory();
+  setInterval(pollMemory, 5000);
+  if (meta.busy) $("busy").textContent = `Someone else is making a film right now (about ${minutes(meta.eta_seconds)} left).`;
+  const saved = store.get();
+  if (saved) {
+    try { session = await api(`/api/sessions/${saved}`); show(); poll(); return; } catch { store.set(null); }
+  }
+}
+
+function loadPhoto(file) {
+  // Shrink on the client so uploads stay small.
+  const img = new Image();
+  img.onload = () => {
+    const scale = Math.min(1, 1024 / Math.max(img.width, img.height));
+    const c = document.createElement("canvas");
+    c.width = Math.round(img.width * scale); c.height = Math.round(img.height * scale);
+    c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+    photo = c.toDataURL("image/jpeg", 0.9);
+    $("photo-preview").src = photo;
+    $("photo-preview").classList.remove("hidden"); $("photo-clear").classList.remove("hidden");
+    URL.revokeObjectURL(img.src);
+    updateForecast();
+  };
+  img.onerror = () => { $("error").textContent = "Could not read that image."; };
+  img.src = URL.createObjectURL(file);
+}
+$("photo").onchange = (e) => { if (e.target.files[0]) loadPhoto(e.target.files[0]); };
+$("photo-clear").onclick = () => {
+  photo = null; $("photo").value = "";
+  $("photo-preview").classList.add("hidden"); $("photo-clear").classList.add("hidden");
+  updateForecast();
+};
+
+$("begin").onclick = async () => {
+  $("error").textContent = "";
+  if (photo && !$("photo-consent").checked) {
+    $("error").textContent = "Please confirm the photo is of you, or that you have the person's permission.";
+    return;
+  }
+  const models = {};
+  for (const sel of document.querySelectorAll("#models select")) models[sel.dataset.stage] = sel.value;
+  const body = { ...pick, models, voice: $("voice").value, music: $("music").checked,
+                 captions: $("captions").checked, photo, photo_consent: $("photo-consent").checked };
+  try {
+    session = await api("/api/sessions", body);
+    store.set(session.id); show(); poll();
+  } catch (e) {
+    $("error").textContent = e.status === 409
+      ? `Someone else is making a film right now. Try again in about ${minutes(e.detail.eta_seconds)}.`
+      : e.message;
+  }
+};
+
+async function choose(body) {
+  $("error").textContent = "";
+  for (const b of document.querySelectorAll("#options button, #free-go")) b.disabled = true;
+  try { session = await api(`/api/sessions/${session.id}/choices`, body); $("free").value = ""; show(); }
+  catch (e) { $("error").textContent = e.message; }
+  for (const b of document.querySelectorAll("#options button, #free-go")) b.disabled = false;
+}
+$("free-go").onclick = () => { const t = $("free").value.trim(); if (t) choose({ text: t }); };
+
+let shownKey = null;
+const stateKey = (s) => `${s.act}:${s.current ? 1 : 0}:${s.film_status}`;
+
+function show() {
+  shownKey = stateKey(session);
+  $("start").classList.add("hidden");
+  $("progress").classList.remove("hidden");
+  const total = meta.beats.length;
+  if (session.act < total) {
+    $("play").classList.remove("hidden");
+    const cur = session.current;
+    $("act-label").textContent = `${session.title ? session.title + " · " : ""}Choice ${session.act + 1} of ${total}`;
+    $("writing").classList.toggle("hidden", !!cur || session.film_status === "failed");
+    $("free-box").classList.toggle("hidden", !cur);
+    $("intro").textContent = cur ? cur.intro : "";
+    $("question").textContent = cur ? cur.question : "";
+    $("options").innerHTML = "";
+    (cur ? cur.options : []).forEach((label, i) => {
+      const b = document.createElement("button");
+      b.className = "card"; b.textContent = label; b.onclick = () => choose({ option: i });
+      $("options").appendChild(b);
+    });
+  } else {
+    $("play").classList.add("hidden");
+    $("premiere").classList.remove("hidden");
+  }
+  render();
+}
+
+function render() {
+  const s = session;
+  $("progress-text").textContent = `${s.shots_done} of ${s.shots_total} shots rendered`;
+  $("progress-bar").style.width = `${100 * s.shots_done / s.shots_total}%`;
+  $("eta").textContent = s.film_status === "done" ? "" : `about ${minutes(s.eta_seconds)} of rendering left`;
+  $("strip").innerHTML = s.shots.filter((x) => x.status !== "waiting").map((x) => `
+    <div class="thumb" title="${esc(x.narration || "")}">
+      ${x.keyframe ? `<img src="${x.keyframe}" alt="">` : ""}
+      <span class="tag ${x.status}">${x.act + 1}.${x.index + 1} ${x.render_type} · ${x.status}</span>
+    </div>`).join("");
+  if (s.film && $("film").classList.contains("hidden")) {
+    $("film").src = s.film; $("film").classList.remove("hidden");
+    $("premiere-title").textContent = s.wait_after_last_choice != null
+      ? `${s.title || "Your film"}, ready ${minutes(s.wait_after_last_choice)} after your last choice`
+      : (s.title || "Your film");
+  }
+  if (s.film_status === "failed") $("premiere-title").textContent = "Something went wrong while making the film";
+  if (s.error) $("error").textContent = s.error;
+  if (s.act >= meta.beats.length) {
+    if (s.title) $("premiere-title").dataset.title = s.title;
+    const max = Math.max(1, ...Object.values(s.values).map(Math.abs));
+    $("summary").innerHTML = `
+      <div class="card recap"><strong>${esc(s.title || "Your story")}</strong>${s.story.map((a) => `
+        <p class="muted">${esc(a.intro)}</p><p class="answer">→ ${esc(a.answer)}</p>`).join("")}</div>
+      <div class="card values"><strong>Your fingerprint</strong>${Object.entries(s.values).map(([k, v]) => `
+        <div><span class="muted">${k}</span><div class="bar"><div style="width:${100 * Math.max(0, v) / max}%"></div></div><span>${v}</span></div>`).join("")}
+        <p class="muted">Style: ${meta.styles[s.style]} · ${s.shots_total} shots (${Math.floor(s.film_seconds / 60)}:${String(s.film_seconds % 60).padStart(2, "0")}) · ${s.profile}<br>
+          Story written by: ${s.writer === "llm" ? `the LLM (${esc(s.models.story)})` : s.writer === "fallback" ? `the LLM (${esc(s.models.story)}), with placeholder text where it failed` : "placeholder writer (no LLM)"}<br>
+          Models: ${esc(s.models.keyframe)}, ${esc(s.models.standard)}${s.photo ? `, ${esc(s.models.photo)} (your photo)` : ""}<br>
+          Sound: ${s.voice ? esc(meta.voices[s.voice] || s.voice) : "no narration"}${s.music ? ", music" : ""}</p>
+        <button class="primary" onclick="store.set(null); location.reload()">Make another</button></div>`;
+  }
+}
+
+let logSeq = 0, logBusy = false;
+async function pollLogs() {
+  if (logBusy) return;
+  logBusy = true;
+  try {
+    const { lines } = await api(`/api/logs?after=${logSeq}`), box = $("log");
+    if (lines.length) {
+      const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 24;
+      box.insertAdjacentHTML("beforeend", lines.map((l) => `<div class="${l.level}">${esc(l.text)}</div>`).join(""));
+      while (box.childElementCount > 1000) box.firstElementChild.remove();
+      logSeq = lines[lines.length - 1].seq;
+      if (atBottom) box.scrollTop = box.scrollHeight;
+    }
+  } catch { /* the server may be restarting */ }
+  logBusy = false;
+}
+
+function poll() {
+  clearInterval(pollTimer);
+  pollLogs();
+  pollTimer = setInterval(async () => {
+    try {
+      session = await api(`/api/sessions/${session.id}`);
+      stateKey(session) !== shownKey ? show() : render();
+    } catch {}
+    await pollLogs();
+    if (session.film_status === "done" || session.film_status === "failed") clearInterval(pollTimer);
+  }, 1500);
+}
+
+init().catch((e) => { $("error").textContent = e.message; });
+</script>
+</body>
+</html>

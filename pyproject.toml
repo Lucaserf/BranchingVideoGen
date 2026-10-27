@@ -13,7 +13,8 @@ dependencies = [
 # GPU stack for the benchmark and the render server. Install torch for your CUDA version first.
 gpu = [
     "torch",
-    "diffusers>=0.35",
+    "diffusers>=0.36",  # Z-Image
+    "bitsandbytes",  # 4-bit models
     "transformers",
     "accelerate",
     "sentencepiece",
@@ -22,10 +23,16 @@ gpu = [
     "peft",
     "ftfy",
 ]
-dev = ["pytest"]
+server = ["fastapi", "uvicorn"]
+# Narration voice (Kokoro TTS, runs on the CPU). espeak-ng from the OS package manager improves rare words.
+audio = ["kokoro>=0.9"]
+dev = ["pytest", "httpx"]
 
 [tool.setuptools]
 packages = ["bvg", "bvg.renderers", "benchmark"]
+
+[tool.setuptools.package-data]
+bvg = ["static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

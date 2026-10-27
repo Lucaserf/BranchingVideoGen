@@ -6,7 +6,92 @@ The design and the options considered are in the project doc "Branching story vi
 
 ## Status
 
-This first piece measures what the L40 can actually render and plans each film around a target waiting time. The story engine, GPU server and web app come next.
+A playable demo: an LLM writes each viewer's story, the L40 renders it while they play, with narration, music and an optional photo of the protagonist. Tested end to end on the L40 with templates; the LLM writer is tested with a fake endpoint so far.
+
+## Demo
+
+A playable end-to-end demo: pick a look, make six choices, and watch the film develop while you play.
+
+```bash
+pip install -e ".[server]"
+python -m bvg.server --mock                          # any machine: placeholder stills and pans
+python -m bvg.server --host 0.0.0.0                  # on the L40, real models, loaded only while a film renders
+```
+
+Open http://localhost:8000 (on the server, forward the port: `ssh -L 8000:localhost:8000 <server>`). To play without a browser and get a film at the end: `python -m bvg.demo_play --shots 18`.
+
+Before starting, the viewer can also:
+
+- **Upload a photo of the protagonist.** Every keyframe that shows the hero is then drawn by an image-edit model (FLUX.1 Kontext by default, Qwen-Image-Edit as an Apache-2.0 alternative) from that photo, so the hero keeps that face. The app asks the viewer to confirm the photo is of them or that they have the person's permission.
+- **Pick the sound.** A narration voice (Kokoro, a small TTS model that runs on the CPU while the GPU renders video), music, and captions, each optional. Music comes from files in `assets/music/` (mp3, wav, ogg, flac, m4a), or a soft synthesized pad when the folder is empty. It dips while the narrator speaks.
+- **Pick the models** for stills, video, quality shots and the photo edit, from the catalog in `configs/profiles.yaml`. Planning uses each model's `est_seconds`; the app shows a memory forecast for the picks (see Memory below).
+
+Install the narration voice with `pip install -e ".[audio]"`.
+
+How it works:
+
+- **Story** (`bvg/story.py`, `bvg/writer.py`): the six beats of the hero's journey are the fixed skeleton, the same for every viewer so runs can be compared. Everything inside them is written as the viewer plays: an LLM writes each act's scene, question and three choices from the answers so far (the viewer can also write their own), then the act's shot prompts and narration. It keeps a short cast list (visual descriptions of the hero, places and recurring characters) and repeats it in every image prompt so they stay recognizable. Each choice also moves a four-axis value fingerprint (courage, empathy, curiosity, order); the LLM scores the options it writes and any free-text answer.
+- **Server** (`bvg/server.py`): FastAPI plus one GPU worker thread. One viewer holds the GPU at a time (released when the film is done or after 15 idle minutes). When an act is locked its keyframes render first, so stills appear within seconds, then its video shots. The planner decides at the start which shots are video and which are pans.
+- **Film** (`bvg/engine.py`): every shot is cropped to 768x512 at 24 fps with its narration burned in as a caption, then the shots are joined with ffmpeg.
+
+Choices made for the demo (all easy to change):
+
+| Decision | Choice | Why |
+| --- | --- | --- |
+| Keyframes | FLUX.1-schnell, 768x512 | 1.3 s per image on the L40 |
+| Video | LTX-Video 0.9.7 distilled | 20 s per 5 s shot, the only measured model fast enough for every profile |
+| Hero shots | Effectively off | Wan 2.2 A14B took 1455 s per shot; the planner only fits 2 in `quality` |
+| GPU sharing | One model in memory at a time, jobs grouped by model | FLUX (34 GB) and LTX (36 GB) together don't fit in 62 GB of RAM next to anything else |
+| Story text | A local LLM (Qwen3 8B through Ollama) writes text, choices and prompts | Every film differs in more than the six answers; a plain fallback writer takes over if the LLM fails |
+| Sound | Kokoro narration on the CPU, music files or a synthesized pad | Keeps the GPU free for video; no music model yet |
+| Character consistency | Only with an uploaded photo | Without a photo each shot is drawn from the prompt alone, so the hero changes look between shots |
+| Film length | The viewer picks the number of shots (6 to 72, default 36), each one image prompt and 5 s of film | Short films make testing faster; shots are split evenly across the six beats, extras go to the climax first |
+
+### The story writer
+
+The writer talks to any OpenAI-compatible chat endpoint, set in the `story:` section of `configs/profiles.yaml`. The default is Ollama on the same machine:
+
+```bash
+curl -fsSL https://ollama.com/install.sh | sh   # or a user-level install, see ollama.com
+ollama pull qwen3:8b
+python -m bvg.server --host 0.0.0.0             # uses story.base_url, http://127.0.0.1:11434/v1
+```
+
+- **Any model or server** works: change `model` and `base_url` (vLLM, llama.cpp server, LM Studio, or a hosted API with its key in `BVG_LLM_API_KEY`). Uncensored community fine-tunes from Ollama or Hugging Face fit here too.
+- **GPU memory**: an 8B model takes about 6 GB of VRAM next to the video models. To keep the GPU entirely for video, run it on the CPU with `extra_body: {options: {num_gpu: 0}}` (slower: tens of seconds per act).
+- **Timing**: after each choice the writer makes two calls on its own thread, the next act's text (what the viewer waits for) and the shot prompts for the act just chosen (what the GPU waits for).
+- **Without an LLM**: `--writer simple` uses plain placeholder text and is the default with `--mock`; `python -m bvg.server --mock --writer llm` tests the real writer with placeholder images. If an LLM call fails, the simple writer covers that step and the premiere shows it.
+
+### Running the server in the background
+
+Run it as a systemd user service, so it keeps going after you close the terminal or SSH:
+
+```bash
+cd ~/BranchingVideoGen
+systemd-run --user --unit=bvg-server --working-directory=$PWD \
+  --setenv=PATH=$PWD/.venv/bin:/usr/bin:/bin \
+  -p StandardOutput=append:$PWD/outputs/server.log -p StandardError=append:$PWD/outputs/server.log \
+  $PWD/.venv/bin/python -m bvg.server --host 0.0.0.0 --port 8000
+
+systemctl --user status bvg-server         # is it running?
+tail -f outputs/server.log                 # follow the log
+systemctl --user stop bvg-server           # stop (then start again after a git pull)
+systemctl --user reset-failed bvg-server   # if a start says "unit already exists"
+```
+
+Once, with sudo: `sudo loginctl enable-linger $USER`. Without it, systemd stops your user services when you have no session open on the machine.
+
+Without sudo, use tmux: `tmux new -s bvg`, start the server, then press Ctrl-b d to detach (`tmux attach -t bvg` to come back). It lasts until tmux is killed or the machine reboots.
+
+## Memory
+
+With `server.residency: sequential` (the default) the server holds one model at a time: it loads a model, renders every ready job that needs it, frees it from the GPU and RAM, then loads the next. The worker picks jobs to keep the loaded model busy (a video shot whose keyframe is ready runs before a keyframe that would need a switch), so a film usually costs one switch per act. Models are freed when a film finishes. `residency: swap` keeps all of a film's models in RAM instead, for faster switches when RAM allows.
+
+- **Live monitor**: the app's header shows GPU and RAM in use, the loaded model, and any LLM Ollama is holding (`GET /api/memory`). The server logs a warning when free RAM drops under `server.memory_reserve_gb`, and logs memory after every model load.
+- **Forecast**: as soon as models, length or profile change, the app shows the peak GPU memory and RAM the film will need (`POST /api/memory/forecast`), from each catalog entry's `weights_gb` (RAM to hold it) and `vram_gb` (GPU peak). If a model won't fit, it says which and why, and with `server.block_on_overflow` the server refuses to start that film. `python -m bvg.memory --model hero=wan2.2-i2v-a14b` prints the same from the command line.
+- The LLM writer counts against the GPU when `story.device: gpu`, or against RAM with `cpu`. Qwen3.8 27B (18 GB) next to LTX (38.5 GB) doesn't fit on the 48 GB GPU, for example; run it on the CPU or pick a smaller writer.
+
+Footprints marked `measured` in the catalog come from the L40 benchmark; the rest are estimates from the weight sizes, so treat a close call as a maybe.
 
 ## Layout
 
@@ -54,7 +139,28 @@ models:
     # ...same fields as the base model it was trained from
 ```
 
-Since viewers type free text into the story, the story layer (not yet built) should still block a small set of things no model choice changes: sexual content involving minors and realistic depictions of real, identifiable people.
+The story writer can be abliterated too: these LLMs have the "refusal direction" removed from their weights, so they write dark or violent turns the viewer asks for instead of refusing. The catalog has the strongest ones that run on the L40 (from [huihui_ai on Ollama](https://ollama.com/huihui_ai)); pick one per film in the app or set `story.model`:
+
+| Model | Size | Notes |
+| --- | --- | --- |
+| `qwen3-8b-abliterated` (default) | ~5 GB | Fits on the GPU next to the video models |
+| `gemma4-12b-abliterated` | ~9 GB | Better prose, tight next to the video models |
+| `qwen3.6-35b-a3b-abliterated` | ~22 GB | Mixture of experts, 3B active: usable on the CPU |
+| `gemma4-26b-a4b-abliterated` | ~18 GB | Mixture of experts, 4B active: usable on the CPU |
+| `qwen3.8-27b-abliterated` | ~18 GB | The strongest writer here; dense, so it needs GPU room |
+| `qwen3-8b` | ~5 GB | The stock model, for comparison |
+
+For images, these abliterated models stay on the GPU on their own:
+
+| Model | GPU | Notes |
+| --- | --- | --- |
+| `z-image-turbo-abliterated` | ~24 GB | Z-Image-Turbo (6B, 8 steps, Apache-2.0) with an abliterated Qwen3-4B text encoder. Fast, strong realism; the first choice for keyframes |
+| `qwen-image-abliterated-nf4` | ~22 GB | Qwen-Image (20B) and its abliterated encoder in 4-bit; best prompt following and text, slower |
+| `qwen-image-edit-2509-abliterated-nf4` | ~24 GB | The photo model (your face in the scene), abliterated and 4-bit |
+
+The bf16 `qwen-image-abliterated` and `qwen-image-edit-2509-abliterated` (about 58 GB each) need CPU offload and nearly all of the server's RAM. Any entry can be quantized with `quantize: {mode: nf4 or int8, components: [...]}`, and its text encoder swapped with `text_encoder`. FLUX and the video models use T5 text encoders, which are not refusal-tuned, so there is nothing to abliterate there.
+
+Two limits stay whatever the model: the writer's instructions forbid sexual content involving minors and sexual or nude depictions of a viewer's uploaded photo. With an abliterated writer that instruction is the only guard, so add a classifier on prompts before opening the app to the public.
 
 ## Running the benchmark on the L40
 

@@ -10,7 +10,9 @@ import argparse
 
 from bvg.config import load_config
 
-STAGE_KIND = {"keyframe": "t2i"}  # every render type with a model is i2v
+STAGE_KIND = {"keyframe": "t2i", "photo": "edit", "story": "llm"}  # every render type with a model is i2v
+TOP_LEVEL_STAGES = ("keyframe", "photo", "story")
+BACKEND = {"t2i": "diffusers_t2i", "i2v": "diffusers_i2v", "edit": "diffusers_edit", "llm": "llm"}
 
 
 class ModelPolicyError(ValueError):
@@ -23,18 +25,46 @@ def apply_overrides(config: dict, overrides: list[str] | None, permissive_only: 
         stage, _, model = item.partition("=")
         if not model:
             raise ValueError(f"expected stage=model, got {item!r}")
-        section = config["keyframe"] if stage == "keyframe" else config["render_types"].get(stage)
-        if section is None:
-            raise KeyError(f"unknown stage {stage!r}")
-        section["model"] = model
+        select_model(config, stage, model)
     if permissive_only is not None:
         config.setdefault("model_policy", {})["permissive_only"] = permissive_only
     return config
 
 
+def _section(config: dict, stage: str) -> dict:
+    section = config.get(stage) if stage in TOP_LEVEL_STAGES else config["render_types"].get(stage)
+    if section is None:
+        raise KeyError(f"unknown stage {stage!r}")
+    return section
+
+
+def select_model(config: dict, stage: str, model: str) -> None:
+    """Point a stage at a catalog model, taking the model's own time estimate for planning."""
+    if model not in config.get("models", {}):
+        raise KeyError(f"{stage}: unknown model {model!r}, expected one of {sorted(config.get('models', {}))}")
+    section = _section(config, stage)
+    if section.get("model") == model:
+        return
+    section["model"] = model
+    est = config["models"][model].get("est_seconds")
+    if est is not None:
+        section["est_seconds_per_image" if stage == "keyframe" else "est_seconds_per_shot"] = est
+
+
+def models_by_kind(config: dict) -> dict[str, list[dict]]:
+    out: dict[str, list[dict]] = {}
+    for name, entry in config.get("models", {}).items():
+        out.setdefault(entry["kind"], []).append({"name": name, "license": entry.get("license"),
+                                                   "permissive": bool(entry.get("permissive")),
+                                                   "est_seconds": entry.get("est_seconds"),
+                                                   "uncensored": bool(entry.get("uncensored")),
+                                                   "vram_gb": entry.get("vram_gb"), "note": entry.get("note")})
+    return out
+
+
 def stage_settings(config: dict, stage: str) -> dict:
     """Catalog defaults for the stage's model, with the stage's own keys layered on top."""
-    section = config["keyframe"] if stage == "keyframe" else config["render_types"][stage]
+    section = _section(config, stage)
     name = section.get("model")
     if name is None:
         return dict(section)  # e.g. pan, which needs no model
@@ -50,8 +80,7 @@ def stage_settings(config: dict, stage: str) -> dict:
         raise ModelPolicyError(f"{stage}: {name!r} is not permissively licensed ({entry.get('license')}); "
                                "pick another model or turn off model_policy.permissive_only")
 
-    backend = "diffusers_t2i" if kind == "t2i" else "diffusers_i2v"
-    return {"backend": backend, **entry, **section, "model_name": name}
+    return {"backend": BACKEND[kind], **entry, **section, "model_name": name}
 
 
 def main() -> None:
@@ -62,13 +91,16 @@ def main() -> None:
 
     config = load_config(args.config) if args.config else load_config()
     in_use = {s: config["render_types"][s].get("model") for s in config["render_types"]}
-    in_use["keyframe"] = config["keyframe"].get("model")
+    for stage in TOP_LEVEL_STAGES:
+        in_use[stage] = config.get(stage, {}).get("model")
     for name, entry in config["models"].items():
         if args.permissive_only and not entry.get("permissive"):
             continue
         stages = ", ".join(s for s, m in in_use.items() if m == name)
         mark = "permissive" if entry.get("permissive") else "restricted"
-        print(f"{name:24} {entry['kind']}  {mark:10}  {entry['license']}" + (f"  [used by {stages}]" if stages else ""))
+        flags = "  uncensored" if entry.get("uncensored") else ""
+        print(f"{name:34} {entry['kind']:4}  {mark:10}  {entry['license']}{flags}" +
+              (f"  [used by {stages}]" if stages else ""))
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@ from bvg.models import ModelPolicyError, apply_overrides, stage_settings
 
 def test_stage_settings_merge_catalog_and_stage_keys():
     s = stage_settings(load_config(), "hero")
-    assert s["model_name"] == "wan2.2-i2v-a14b"
+    assert s["model_name"] == "wan2.1-i2v-14b-480p"
     assert s["pipeline"] == "WanImageToVideoPipeline"
     assert s["backend"] == "diffusers_i2v"
     assert s["cpu_offload"] is True  # set on the stage, not in the catalog
@@ -23,9 +23,9 @@ def test_override_selects_another_model():
 
 
 def test_permissive_only_rejects_restricted_models():
-    config = apply_overrides(load_config(), [], permissive_only=True)
+    config = apply_overrides(load_config(), ["standard=ltx-0.9.7-distilled"], permissive_only=True)
     with pytest.raises(ModelPolicyError):
-        stage_settings(config, "standard")  # LTX-Video default
+        stage_settings(config, "standard")
     assert stage_settings(config, "hero")["permissive"]
 
 
@@ -36,7 +36,10 @@ def test_wrong_kind_is_rejected():
 
 def test_every_catalog_entry_is_complete():
     for name, entry in load_config()["models"].items():
-        for key in ("kind", "license", "permissive", "pipeline", "model_id", "width", "height", "steps", "guidance"):
+        assert {"kind", "license", "permissive", "model_id"} <= entry.keys(), name
+        if entry["kind"] == "llm":
+            continue
+        for key in ("pipeline", "width", "height", "steps", "guidance"):
             assert key in entry, (name, key)
         if entry["kind"] == "i2v":
             assert {"fps", "frame_multiple", "call_style"} <= entry.keys(), name

@@ -6,12 +6,43 @@
 
 film:
   acts: 6
-  shots_per_act: 6
+  # Each shot (one image prompt, one video clip) lasts shot_seconds. The viewer
+  # picks how many shots the film has; they are split across the six beats.
+  shots: 36
+  min_shots: 6
+  max_shots: 72
   shot_seconds: 5
   # How long a viewer is expected to spend on each choice. Act N's shots can
   # start rendering once act N is locked, so this sets how much GPU time is
   # available during play.
   seconds_per_choice: 90
+  # Every shot is resized and cropped to this size and fps before stitching.
+  width: 768
+  height: 512
+  fps: 24
+
+# Render server (bvg.server).
+#
+# residency: how models share the GPU and host RAM.
+#   sequential  one model in memory at a time: load it, render every job that
+#               needs it, free it, load the next. Lowest memory; each switch
+#               reloads from disk (fast when the OS still caches the files).
+#               Jobs are grouped by model so switches are rare.
+#   swap        every model the film uses stays in host RAM and only the one
+#               rendering is on the GPU. Faster switches, but RAM = all models.
+# Before a film starts, the server forecasts its peak RAM and GPU memory from
+# the catalog's weights_gb and vram_gb; with block_on_overflow it refuses a
+# film that won't fit (the app warns as soon as the models are picked).
+server:
+  residency: sequential
+  memory_reserve_gb: 4        # kept free for the OS, ffmpeg, the narration voice
+  block_on_overflow: true
+  memory_monitor_seconds: 5
+  log_file: outputs/server.log
+  idle_lease_minutes: 15
+  # Not used with residency sequential. With swap, how many pipelines stay in RAM.
+  max_loaded_models: 3
+  outputs: outputs/sessions
 
 # When true, selecting a model whose catalog entry is not `permissive` is an error.
 model_policy:
@@ -21,36 +52,81 @@ model_policy:
 # `--model standard=wan2.2-ti2v-5b`. Any key next to `model` overrides the
 # catalog defaults for that stage.
 keyframe:
-  model: flux1-schnell
-  # Measured on the L40: 1.32 s per 832x480 image at 4 steps, 32.3 GB peak VRAM.
-  est_seconds_per_image: 1.3
+  model: qwen-image-abliterated-nf4
+  width: 768
+  height: 512
+  # Measured on the L40: about 19 s per image (load 144 s cold, 12-60 s warm).
+  # flux1-schnell measured 1.32 s per 832x480 image.
+  est_seconds_per_image: 19
 
 render_types:
   # A slow camera move over the keyframe. Almost free, used to fit tight budgets.
   pan:
     backend: pan
-    width: 832
-    height: 480
+    width: 768
+    height: 512
     fps: 24
     zoom: 1.15
     est_seconds_per_shot: 2
 
   # Fast image-to-video model, used for most shots.
   standard:
-    model: ltx-0.9.7-distilled
-    # Measured on the L40: 20.0 s per 121-frame shot, 38.5 GB peak VRAM.
-    est_seconds_per_shot: 20
+    model: wan2.1-i2v-14b-480p
+    # Measured on the L40: about 1500 s per shot (40 steps at 35 s with offload),
+    # 36.6 GB peak VRAM, 54 GB RAM. ltx-0.9.7-distilled measured 20 s per shot.
+    est_seconds_per_shot: 1500
 
   # Higher quality image-to-video model, used for the most important shots.
   # 40 steps without a distillation LoRA is slow (minutes per shot). To try a
   # 4-step distillation LoRA, set `lora` and `steps: 4`, `guidance: 1.0` here.
   hero:
-    model: wan2.2-i2v-a14b
+    model: wan2.1-i2v-14b-480p
     cpu_offload: true
-    # Measured on the L40: 1455 s per 81-frame shot at 40 steps with offload,
-    # 30.5 GB peak VRAM, about 70 GB host RAM. Too slow for any hero shot in
-    # `balanced`; needs a 4-step distillation LoRA to be useful.
-    est_seconds_per_shot: 1455
+    # Measured on the L40: about 1500 s per shot. wan2.2-i2v-a14b measured 1455 s
+    # at 40 steps with offload, about 70 GB host RAM.
+    est_seconds_per_shot: 1500
+
+# Who writes the story: each act's scene, question and choices, then its shot
+# prompts and narration, from the viewer's answers. Any OpenAI-compatible chat
+# endpoint works: Ollama (http://127.0.0.1:11434/v1), vLLM, llama.cpp server, or a
+# hosted API (key in the env var named by api_key_env). If a call fails, the simple
+# writer (plain placeholder text, no model) fills in so the film still finishes.
+# `model` is an llm entry of the catalog below; the app lets the viewer pick another.
+story:
+  writer: llm                 # llm or simple
+  base_url: http://127.0.0.1:11434/v1
+  model: qwen3-8b-abliterated
+  api_key_env: BVG_LLM_API_KEY
+  language: English
+  temperature: 0.9
+  max_tokens: 2500
+  timeout_seconds: 120
+  fallback_to_simple: true
+  # With Ollama, its own API is used (api: ollama): device picks GPU or CPU per
+  # request, the model is unloaded keep_alive seconds after each call, and on the
+  # GPU a call waits for the current render to finish, so the LLM and a video
+  # model never compute at the same time.
+  api: auto                   # ollama, openai (any other server), or auto: ollama on port 11434
+  device: gpu                 # gpu or cpu
+  # On the GPU, free the image/video model before each writer call, so the LLM and
+  # the render models never share GPU memory. Costs a model reload after each call
+  # (about 12-60 s, small next to a Wan shot); false keeps the model loaded.
+  gpu_exclusive: true
+  keep_alive: 0               # unload right after each call, freeing its memory for rendering
+  num_ctx: 8192               # the prompts plus the reply need more than Ollama's default context
+  extra_body: {}              # extra request fields
+
+# Keyframes for shots with the protagonist when the viewer uploads a photo: an
+# image-edit model redraws the scene with that person in it.
+photo:
+  model: qwen-image-edit-2509-abliterated-nf4
+
+# Audio mixed into the film: a narration voice per shot and a music bed.
+audio:
+  narration: kokoro          # kokoro (small TTS, runs on the CPU) or none
+  voice: af_heart            # default voice; the app lets the viewer pick
+  music_dir: assets/music    # mp3/wav files to use as music; a soft synthesized pad when empty
+  music_volume: 0.25         # relative to narration, lowered further while someone speaks
 
 finish:
   # Stitching, music and narration mix, optional upscale and interpolation.
@@ -69,12 +145,79 @@ profiles:
     target_wait_minutes: 60
     max_hero_shots: 36
 
-# Model catalog. `kind` is t2i (keyframes) or i2v (shots). `permissive` means the
+# Model catalog. `kind` is t2i (keyframes), i2v (shots) or edit (keyframes that
+# put the viewer's photo into the scene). `est_seconds` is per image or per 5 s
+# shot on the L40; it is used for planning when a model is picked per film. `permissive` means the
 # license allows commercial use with no field-of-use, revenue or territory limits.
 # License notes are a summary; check the model card before shipping.
 models:
+  # --- story writers (LLM) ---
+  # model_id is the name on the LLM server (here Ollama: `ollama pull <model_id>`).
+  # vram_gb is the Q4 download size plus an 8k-token context, about what the model takes in GPU memory.
+  # The video models peak at 32-38 GB, so on the 48 GB L40 only the small writers
+  # fit on the GPU next to them; the larger ones need GPU room or run on the CPU.
+  # Abliterated models have the refusal direction removed from their weights, so
+  # they write what the story asks for instead of refusing (marked uncensored).
+  qwen3-8b-abliterated:
+    kind: llm
+    license: Apache-2.0
+    permissive: true
+    uncensored: true
+    model_id: huihui_ai/qwen3-abliterated:8b
+    vram_gb: 6.5
+    prompt_suffix: " /no_think"
+    note: fits on the GPU next to the video models
+
+  gemma4-12b-abliterated:
+    kind: llm
+    license: Gemma
+    permissive: false
+    uncensored: true
+    model_id: huihui_ai/gemma-4-abliterated:12b
+    vram_gb: 10.5  # estimate, size not listed
+    note: better prose, tight next to the video models
+
+  qwen3.6-35b-a3b-abliterated:
+    kind: llm
+    license: Apache-2.0
+    permissive: true
+    uncensored: true
+    model_id: huihui_ai/Qwen3.6-abliterated:35b
+    vram_gb: 24
+    note: mixture of experts (3B active), fast enough on the CPU
+
+  gemma4-26b-a4b-abliterated:
+    kind: llm
+    license: Gemma
+    permissive: false
+    uncensored: true
+    model_id: huihui_ai/gemma-4-abliterated:26b
+    vram_gb: 20
+    note: mixture of experts (4B active), fast enough on the CPU
+
+  qwen3.8-27b-abliterated:
+    kind: llm
+    license: Apache-2.0
+    permissive: true
+    uncensored: true
+    model_id: huihui_ai/Qwen3.8-abliterated:27b
+    vram_gb: 20
+    note: the strongest writer here; dense, so it needs GPU room
+
+  qwen3-8b:
+    kind: llm
+    license: Apache-2.0
+    permissive: true
+    model_id: qwen3:8b
+    vram_gb: 6.5
+    prompt_suffix: " /no_think"
+    note: the stock model, for comparison
+
   # --- keyframes (text to image) ---
   flux1-schnell:
+    weights_gb: 34
+    vram_gb: 32.3  # measured peak
+    est_seconds: 1.3  # measured
     kind: t2i
     license: Apache-2.0
     permissive: true
@@ -89,6 +232,10 @@ models:
       max_sequence_length: 256
 
   qwen-image:
+    cpu_offload: true
+    weights_gb: 58
+    vram_gb: 45  # estimate, needs cpu_offload
+    est_seconds: 25  # guess
     kind: t2i
     license: Apache-2.0
     permissive: true
@@ -103,7 +250,100 @@ models:
     extra_kwargs:
       negative_prompt: " "
 
+  # Z-Image-Turbo (Tongyi, 6B, 8 steps): about 21 GB, so it stays on the GPU
+  # with room to spare. The abliterated variant swaps its Qwen3-4B text encoder
+  # for an abliterated one, so prompts aren't softened before they reach the image
+  # model. Needs diffusers >= 0.36.
+  z-image-turbo:
+    weights_gb: 21
+    vram_gb: 24  # estimate
+    est_seconds: 3  # guess
+    kind: t2i
+    license: Apache-2.0
+    permissive: true
+    pipeline: ZImagePipeline
+    model_id: Tongyi-MAI/Z-Image-Turbo
+    dtype: bfloat16
+    width: 768
+    height: 512
+    steps: 8
+    guidance: 0.0
+
+  z-image-turbo-abliterated:
+    weights_gb: 21
+    vram_gb: 24  # estimate
+    est_seconds: 3  # guess
+    kind: t2i
+    license: Apache-2.0
+    permissive: true
+    uncensored: true
+    pipeline: ZImagePipeline
+    model_id: Tongyi-MAI/Z-Image-Turbo
+    text_encoder:
+      class: Qwen3Model
+      model_id: huihui-ai/Huihui-Qwen3-4B-abliterated-v2
+    dtype: bfloat16
+    width: 768
+    height: 512
+    steps: 8
+    guidance: 0.0
+
+  # Qwen-Image (abliterated encoder) quantized to 4 bits so it fits on the GPU
+  # without offload: about 18 GB instead of 58. Needs bitsandbytes.
+  qwen-image-abliterated-nf4:
+    weights_gb: 20
+    vram_gb: 22  # estimate
+    est_seconds: 19  # measured on the L40
+    kind: t2i
+    license: Apache-2.0
+    permissive: true
+    uncensored: true
+    pipeline: QwenImagePipeline
+    model_id: Qwen/Qwen-Image
+    text_encoder:
+      class: Qwen2_5_VLForConditionalGeneration
+      model_id: huihui-ai/Qwen2.5-VL-7B-Instruct-abliterated
+    quantize:
+      mode: nf4
+      components: [transformer, text_encoder]
+    dtype: bfloat16
+    width: 832
+    height: 480
+    steps: 30
+    guidance: 4.0
+    guidance_arg: true_cfg_scale
+    extra_kwargs:
+      negative_prompt: " "
+
+  # Qwen-Image with an abliterated copy of its text encoder (Qwen2.5-VL 7B), so
+  # prompts are not softened before they reach the image model.
+  qwen-image-abliterated:
+    cpu_offload: true
+    weights_gb: 58
+    vram_gb: 45  # estimate, needs cpu_offload
+    est_seconds: 25  # guess
+    kind: t2i
+    license: Apache-2.0
+    permissive: true
+    uncensored: true
+    pipeline: QwenImagePipeline
+    model_id: Qwen/Qwen-Image
+    text_encoder:
+      class: Qwen2_5_VLForConditionalGeneration
+      model_id: huihui-ai/Qwen2.5-VL-7B-Instruct-abliterated
+    dtype: bfloat16
+    width: 832
+    height: 480
+    steps: 30
+    guidance: 4.0
+    guidance_arg: true_cfg_scale
+    extra_kwargs:
+      negative_prompt: " "
+
   flux1-dev:
+    weights_gb: 34
+    vram_gb: 33  # estimate
+    est_seconds: 10  # guess
     kind: t2i
     license: FLUX.1 [dev] Non-Commercial
     permissive: false
@@ -117,6 +357,9 @@ models:
 
   # --- shots (image to video) ---
   wan2.2-i2v-a14b:
+    weights_gb: 70
+    vram_gb: 30.5  # measured with cpu_offload: 30.5 GB GPU, about 70 GB RAM
+    est_seconds: 1455  # measured, 40 steps with offload
     kind: i2v
     license: Apache-2.0
     permissive: true
@@ -134,6 +377,9 @@ models:
   # Measured on the L40 with cpu_offload on: 645 s per shot, 15.9 GB peak VRAM.
   # It fits in VRAM, so try cpu_offload: false, 832x480 or fewer steps for speed.
   wan2.2-ti2v-5b:
+    weights_gb: 22
+    vram_gb: 15.9  # measured with cpu_offload
+    est_seconds: 645  # measured, 50 steps with offload
     kind: i2v
     license: Apache-2.0
     permissive: true
@@ -150,6 +396,10 @@ models:
     vae_tiling: true
 
   wan2.1-i2v-14b-480p:
+    cpu_offload: true
+    weights_gb: 54
+    vram_gb: 36.6  # measured with cpu_offload: 36.6 GB GPU, 54 GB RAM
+    est_seconds: 1500  # measured, 40 steps with offload
     kind: i2v
     license: Apache-2.0
     permissive: true
@@ -165,6 +415,9 @@ models:
     guidance: 5.0
 
   ltx-0.9.7-distilled:
+    weights_gb: 36
+    vram_gb: 38.5  # measured peak
+    est_seconds: 20  # measured
     kind: i2v
     license: LTX-Video Open Weights (paid license above a revenue threshold)
     permissive: false
@@ -184,6 +437,9 @@ models:
     vae_tiling: true
 
   hunyuanvideo-i2v:
+    weights_gb: 43
+    vram_gb: 30  # estimate with cpu_offload
+    est_seconds: 600  # guess
     kind: i2v
     license: Tencent Hunyuan Community (excludes EU, UK, South Korea)
     permissive: false
@@ -199,3 +455,88 @@ models:
     guidance: 1.0
     vae_tiling: true
     cpu_offload: true
+
+  # --- keyframes from the viewer's photo (image edit) ---
+  flux1-kontext-dev:
+    weights_gb: 34
+    vram_gb: 34  # estimate
+    est_seconds: 10  # guess
+    kind: edit
+    license: FLUX.1 [dev] Non-Commercial
+    permissive: false
+    pipeline: FluxKontextPipeline
+    model_id: black-forest-labs/FLUX.1-Kontext-dev
+    dtype: bfloat16
+    width: 768
+    height: 512
+    steps: 28
+    guidance: 2.5
+
+  qwen-image-edit-2509:
+    cpu_offload: true
+    weights_gb: 58
+    vram_gb: 45  # estimate, needs cpu_offload
+    est_seconds: 60  # guess
+    kind: edit
+    license: Apache-2.0
+    permissive: true
+    pipeline: QwenImageEditPlusPipeline
+    model_id: Qwen/Qwen-Image-Edit-2509
+    dtype: bfloat16
+    width: 768
+    height: 512
+    steps: 40
+    guidance: 4.0
+    guidance_arg: true_cfg_scale
+    extra_kwargs:
+      negative_prompt: " "
+
+  # The same edit model with the abliterated text encoder.
+  qwen-image-edit-2509-abliterated:
+    cpu_offload: true
+    weights_gb: 58
+    vram_gb: 45  # estimate, needs cpu_offload
+    est_seconds: 60  # guess
+    kind: edit
+    license: Apache-2.0
+    permissive: true
+    uncensored: true
+    pipeline: QwenImageEditPlusPipeline
+    model_id: Qwen/Qwen-Image-Edit-2509
+    text_encoder:
+      class: Qwen2_5_VLForConditionalGeneration
+      model_id: huihui-ai/Qwen2.5-VL-7B-Instruct-abliterated
+    dtype: bfloat16
+    width: 768
+    height: 512
+    steps: 40
+    guidance: 4.0
+    guidance_arg: true_cfg_scale
+    extra_kwargs:
+      negative_prompt: " "
+
+  # The abliterated edit model quantized to 4 bits: fits on the GPU (about 20 GB).
+  qwen-image-edit-2509-abliterated-nf4:
+    weights_gb: 20
+    vram_gb: 24  # estimate
+    est_seconds: 80  # guess
+    kind: edit
+    license: Apache-2.0
+    permissive: true
+    uncensored: true
+    pipeline: QwenImageEditPlusPipeline
+    model_id: Qwen/Qwen-Image-Edit-2509
+    text_encoder:
+      class: Qwen2_5_VLForConditionalGeneration
+      model_id: huihui-ai/Qwen2.5-VL-7B-Instruct-abliterated
+    quantize:
+      mode: nf4
+      components: [transformer, text_encoder]
+    dtype: bfloat16
+    width: 768
+    height: 512
+    steps: 40
+    guidance: 4.0
+    guidance_arg: true_cfg_scale
+    extra_kwargs:
+      negative_prompt: " "
