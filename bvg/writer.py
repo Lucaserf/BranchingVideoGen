@@ -216,6 +216,8 @@ class LLMWriter:
         self.num_ctx = settings.get("num_ctx", 8192)
         # Held during each call when the LLM shares the GPU, so it never runs alongside a render.
         self.gpu_lock = None
+        # Called (under the lock) before each call on the GPU, e.g. to free the image/video model first.
+        self.before_gpu = None
 
     def _system(self) -> str:
         beats = "\n".join(f"{i + 1}. {b.title}: {b.purpose}" for i, b in enumerate(BEATS))
@@ -259,6 +261,8 @@ class LLMWriter:
     def ask(self, prompt: str) -> dict:
         if self.gpu_lock is not None and self.device == "gpu":
             with self.gpu_lock:
+                if self.before_gpu is not None:
+                    self.before_gpu()
                 return self._ask(prompt)
         return self._ask(prompt)
 
@@ -393,9 +397,9 @@ class FallbackWriter:
         return self._do("shots", state, act_index)
 
 
-def make_writer(settings: dict, mock: bool = False, gpu_lock=None):
+def make_writer(settings: dict, mock: bool = False, gpu_lock=None, before_gpu=None):
     if mock or settings.get("writer", "llm") == "simple":
         return SimpleWriter()
     llm = LLMWriter(settings)
-    llm.gpu_lock = gpu_lock
+    llm.gpu_lock, llm.before_gpu = gpu_lock, before_gpu
     return FallbackWriter(llm, SimpleWriter()) if settings.get("fallback_to_simple", True) else llm

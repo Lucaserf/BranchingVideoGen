@@ -190,6 +190,8 @@ class App:
         self.sessions: dict[str, Session] = {}
         self.jobs = Jobs()
         self.reserve_gb = server.get("memory_reserve_gb", 4)
+        # The LLM gets the GPU to itself: the image/video model is freed before each writer call.
+        self.llm_exclusive = config.get("story", {}).get("gpu_exclusive", True)
         self.block_on_overflow = server.get("block_on_overflow", True)
         self.unload_when_idle = server.get("unload_when_idle", True)
         self.monitor = memory.Monitor(server.get("memory_monitor_seconds", 5), self.reserve_gb,
@@ -238,7 +240,9 @@ class App:
                               shots={(s.act, s.index): ShotState(s.act, s.index, s.render_type) for s in plan.shots},
                               dir=self.outputs / sid, settings=settings, costs=costs, voice=voice,
                               music=body.music, captions=body.captions, photo=photo,
-                              writer=self.writer or make_writer(settings["story"], gpu_lock=self.engine.lock),
+                              writer=self.writer or make_writer(
+                                  settings["story"], gpu_lock=self.engine.lock,
+                                  before_gpu=self.engine.unload_all if self.llm_exclusive else None),
                               forecast=forecast)
             session.dir.mkdir(parents=True, exist_ok=True)
             if photo is not None:
@@ -267,7 +271,8 @@ class App:
         held = sum(float(catalog.get(name, {}).get("weights_gb") or 0) for _, name in self.engine.loaded)
         snap = self.monitor.sample()
         return memory.forecast(settings, self.engine.residency, snap, used_stages=used, reserve_gb=self.reserve_gb,
-                               llm_device=self.config.get("story", {}).get("device", "gpu"), held_ram_gb=held)
+                               llm_device=self.config.get("story", {}).get("device", "gpu"), held_ram_gb=held,
+                               llm_exclusive=self.llm_exclusive)
 
     def forecast_for(self, body: "ForecastIn") -> dict:
         settings, costs = self._film_models(body.models)

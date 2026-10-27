@@ -168,7 +168,8 @@ def footprint(settings: dict) -> dict:
 
 
 def forecast(settings: dict[str, dict], residency: str, snap: dict, *, used_stages: list[str],
-             reserve_gb: float = 4.0, llm_device: str = "gpu", held_ram_gb: float = 0.0) -> dict:
+             reserve_gb: float = 4.0, llm_device: str = "gpu", held_ram_gb: float = 0.0,
+             llm_exclusive: bool = False) -> dict:
     """Predicted peak memory for a film, and whether it fits.
 
     `settings` maps stage -> stage settings (from bvg.models.stage_settings); only
@@ -191,7 +192,8 @@ def forecast(settings: dict[str, dict], residency: str, snap: dict, *, used_stag
     # An LLM on the GPU never computes during a render (the writer waits for the GPU lock), so it only
     # shares the GPU with the loaded model's weights, not with the model's peak while rendering.
     for m in items:
-        resident = 0.0 if m["offload"] else min(m["weights_gb"], m["vram_gb"])
+        # With llm_exclusive the model is freed before the LLM runs, so they never share the GPU.
+        resident = 0.0 if m["offload"] or llm_exclusive else min(m["weights_gb"], m["vram_gb"])
         m["gpu_need_gb"] = round(max(m["vram_gb"], resident + llm_vram), 1)
     peak_vram = max((m["gpu_need_gb"] for m in items), default=llm_vram)
     if residency == "sequential":
@@ -214,7 +216,8 @@ def forecast(settings: dict[str, dict], residency: str, snap: dict, *, used_stag
         what = "the largest model" if residency == "sequential" else "all the film's models together"
         warnings.append(f"{what} needs about {peak_ram:.0f} GB of RAM, more than the {ram_budget:.0f} GB free")
     return {"residency": residency, "models": items,
-            "llm": {"model": llm.get("model_name"), "gb": llm_gb, "device": llm_device} if llm_gb else None,
+            "llm": {"model": llm.get("model_name"), "gb": llm_gb, "device": llm_device,
+                    "exclusive": llm_exclusive} if llm_gb else None,
             "peak_vram_gb": round(peak_vram, 1), "peak_ram_gb": round(peak_ram, 1),
             "vram_budget_gb": None if vram_budget is None else round(vram_budget, 1),
             "ram_budget_gb": None if ram_budget is None else round(ram_budget, 1),

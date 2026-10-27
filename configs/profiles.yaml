@@ -108,6 +108,10 @@ story:
   # model never compute at the same time.
   api: auto                   # ollama, openai (any other server), or auto: ollama on port 11434
   device: gpu                 # gpu or cpu
+  # On the GPU, free the image/video model before each writer call, so the LLM and
+  # the render models never share GPU memory. Costs a model reload after each call
+  # (about 12-60 s, small next to a Wan shot); false keeps the model loaded.
+  gpu_exclusive: true
   keep_alive: 0               # unload right after each call, freeing its memory for rendering
   num_ctx: 8192               # the prompts plus the reply need more than Ollama's default context
   extra_body: {}              # extra request fields

@@ -356,3 +356,22 @@ def test_options_without_a_label_key_still_parse():
     act = parse_act({"intro": "i", "question": "q", "options": [{"text": "Run", "values": {"courage": 1}},
                                                                  {"option": "Hide"}, "Wait"]})
     assert [o.label for o in act.options] == ["Run", "Hide", "Wait"] and act.options[0].values == {"courage": 1}
+
+
+def test_exclusive_llm_never_shares_the_gpu_with_a_render_model():
+    from bvg import memory
+    from bvg.config import load_config
+    from bvg.models import stage_settings
+
+    config = load_config()
+    settings = {s: stage_settings(config, s) for s in ("keyframe", "story")}
+    shared = memory.forecast(settings, "sequential", _snap(), used_stages=["keyframe"])
+    alone = memory.forecast(settings, "sequential", _snap(), used_stages=["keyframe"], llm_exclusive=True)
+    assert shared["peak_vram_gb"] == 20 + 6.5 and alone["peak_vram_gb"] == 22  # Qwen-Image 4-bit's own peak
+
+    freed = []
+    writer = LLMWriter({"base_url": "http://127.0.0.1:9/v1", "model_id": "m", "timeout_seconds": 1})
+    writer.gpu_lock, writer.before_gpu = threading.Lock(), lambda: freed.append(True)
+    with pytest.raises(Exception):
+        writer.ask("hi")
+    assert freed == [True]
