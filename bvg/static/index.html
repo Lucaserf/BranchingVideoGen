@@ -65,6 +65,7 @@
   <div class="eyebrow">A film made only for you</div>
   <h1>Your Hero's Journey</h1>
   <p class="muted" id="subtitle">Six choices. One film made from them, rendered while you play.</p>
+  <p class="muted" id="memline" style="font-size:13px"></p>
 
   <div id="start">
     <section>
@@ -113,6 +114,9 @@
         <p class="muted">A model loads the first time a film uses it, which can take a few minutes. Times are per image or per 5-second shot on the L40.</p>
         <div class="grid" id="models"></div>
       </details>
+    </section>
+    <section>
+      <div class="card" id="forecast"><span class="muted">Checking memory…</span></div>
     </section>
     <section class="row">
       <button class="primary" id="begin">Begin</button>
@@ -179,9 +183,49 @@ function cards(container, entries, key, describe) {
     const b = document.createElement("button");
     b.className = "card" + (pick[key] === value ? " selected" : "");
     b.innerHTML = `<strong>${label}</strong>${describe ? `<div class="muted">${describe(value)}</div>` : ""}`;
-    b.onclick = () => { pick[key] = value; cards(container, entries, key, describe); };
+    b.onclick = () => { pick[key] = value; cards(container, entries, key, describe); updateForecast(); };
     container.appendChild(b);
   }
+}
+
+let forecastTimer = null;
+function updateForecast() {
+  if (!meta) return;
+  clearTimeout(forecastTimer);
+  forecastTimer = setTimeout(async () => {
+    const models = {};
+    for (const sel of document.querySelectorAll("#models select")) models[sel.dataset.stage] = sel.value;
+    try {
+      renderForecast(await api("/api/memory/forecast", { models, profile: pick.profile, shots: pick.shots, photo: !!photo }));
+    } catch (e) {
+      $("forecast").innerHTML = `<span class="error">${esc(e.message)}</span>`;
+    }
+  }, 250);
+}
+
+function renderForecast(f) {
+  const gb = (v) => v == null ? "?" : `${v} GB`;
+  const mode = f.residency === "sequential" ? "one model in memory at a time" : "the film's models kept in RAM";
+  $("forecast").innerHTML = `<strong>Memory forecast</strong> <span class="muted">(${mode})</span>
+    <div class="muted">Peak GPU ${gb(f.peak_vram_gb)} of ${gb(f.vram_budget_gb)} usable · peak RAM ${gb(f.peak_ram_gb)} of ${gb(f.ram_budget_gb)} free</div>
+    <div class="muted">Loads ${f.models.map((m) => `${esc(m.model)} (${m.vram_gb} GB GPU, ${m.ram_gb} GB RAM)`).join(", then ")}${
+      f.llm ? `; the writer ${esc(f.llm.model)} takes ${f.llm.gb} GB on the ${f.llm.device.toUpperCase()}` : ""}</div>
+    <div class="muted">Shots planned: ${Object.entries(f.plan || {}).filter(([, n]) => n).map(([k, n]) => `${n} ${k}`).join(", ")}</div>
+    ${f.fits ? `<div style="color:var(--ok)">Fits in memory</div>`
+             : f.warnings.map((w) => `<div class="error">${esc(w)}</div>`).join("") +
+               (meta.mock ? `<div class="muted">Mock mode loads no models, so you can still start.</div>` : "")}`;
+  $("begin").disabled = !f.fits && !meta.mock;
+}
+
+async function pollMemory() {
+  try {
+    const m = await api("/api/memory"), n = m.now, parts = [];
+    if (n.gpu) parts.push(`GPU ${(n.gpu.total_gb - n.gpu.free_gb).toFixed(1)} / ${n.gpu.total_gb.toFixed(0)} GB used`);
+    if (n.ram) parts.push(`RAM ${(n.ram.total_gb - n.ram.free_gb).toFixed(1)} / ${n.ram.total_gb.toFixed(0)} GB used`);
+    parts.push(m.loaded.length ? `loaded: ${m.loaded.map(esc).join(", ")}` : "no model loaded");
+    for (const l of n.llm || []) parts.push(`LLM ${esc(l.name)} ${l.size_gb.toFixed(1)} GB`);
+    $("memline").innerHTML = "Server memory: " + parts.join(" · ");
+  } catch { /* the server may be restarting */ }
 }
 
 const minutes = (s) => s < 90 ? `${Math.max(0, Math.round(s))} s` : `${Math.round(s / 60)} min`;
@@ -200,6 +244,7 @@ async function init() {
     $("shots").value = $("shots-n").value = v;
     const secs = v * sh.shot_seconds;
     $("shots-out").textContent = `shots · ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")} of film`;
+    updateForecast();
   };
   for (const id of ["shots", "shots-n"]) {
     Object.assign($(id), { min: sh.min_shots, max: sh.max_shots });
@@ -219,6 +264,10 @@ async function init() {
         m.est_seconds ? ` · ~${m.est_seconds} s` : ""}${m.vram_gb ? ` · ~${m.vram_gb} GB` : ""}${
         m.uncensored ? " · uncensored" : ""}${m.permissive ? "" : " · restricted license"}</option>`).join("")}
     </select></label>`).join("");
+  $("models").onchange = updateForecast;
+  updateForecast();
+  pollMemory();
+  setInterval(pollMemory, 5000);
   if (meta.busy) $("busy").textContent = `Someone else is making a film right now (about ${minutes(meta.eta_seconds)} left).`;
   const saved = store.get();
   if (saved) {
@@ -238,6 +287,7 @@ function loadPhoto(file) {
     $("photo-preview").src = photo;
     $("photo-preview").classList.remove("hidden"); $("photo-clear").classList.remove("hidden");
     URL.revokeObjectURL(img.src);
+    updateForecast();
   };
   img.onerror = () => { $("error").textContent = "Could not read that image."; };
   img.src = URL.createObjectURL(file);
@@ -246,6 +296,7 @@ $("photo").onchange = (e) => { if (e.target.files[0]) loadPhoto(e.target.files[0
 $("photo-clear").onclick = () => {
   photo = null; $("photo").value = "";
   $("photo-preview").classList.add("hidden"); $("photo-clear").classList.add("hidden");
+  updateForecast();
 };
 
 $("begin").onclick = async () => {

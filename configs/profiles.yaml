@@ -21,16 +21,26 @@ film:
   height: 512
   fps: 24
 
-# Render server (bvg.server). Both the keyframe and the video model are kept
-# loaded, but FLUX.1-schnell (32 GB peak) and LTX-Video (38.5 GB) don't fit on the
-# GPU together. swap_models keeps them in host RAM and moves the one a job needs
-# onto the GPU, so weights only move when the job type changes. offload_all
-# (used when swap_models is off) offloads per call instead: on the L40 that made
-# keyframes 23 s instead of 1.3 s and LTX shots 50-80 s instead of 20 s.
+# Render server (bvg.server).
+#
+# residency: how models share the GPU and host RAM.
+#   sequential  one model in memory at a time: load it, render every job that
+#               needs it, free it, load the next. Lowest memory; each switch
+#               reloads from disk (fast when the OS still caches the files).
+#               Jobs are grouped by model so switches are rare.
+#   swap        every model the film uses stays in host RAM and only the one
+#               rendering is on the GPU. Faster switches, but RAM = all models.
+# Before a film starts, the server forecasts its peak RAM and GPU memory from
+# the catalog's weights_gb and vram_gb; with block_on_overflow it refuses a
+# film that won't fit (the app warns as soon as the models are picked).
 server:
-  swap_models: true
-  offload_all: true
+  residency: sequential
+  memory_reserve_gb: 4        # kept free for the OS, ffmpeg, the narration voice
+  block_on_overflow: true
+  memory_monitor_seconds: 5
   idle_lease_minutes: 15
+  # Not used with residency sequential. With swap, how many pipelines stay in RAM.
+  max_loaded_models: 3
   outputs: outputs/sessions
 
 # When true, selecting a model whose catalog entry is not `permissive` is an error.
@@ -90,6 +100,7 @@ story:
   max_tokens: 2500
   timeout_seconds: 120
   fallback_to_simple: true
+  device: gpu                 # where the LLM server runs the model (gpu or cpu); used for the memory forecast
   extra_body: {}              # extra request fields, e.g. {"think": false} or {"options": {"num_gpu": 0}} for Ollama
 
 # Keyframes for shots with the protagonist when the viewer uploads a photo: an
@@ -191,6 +202,8 @@ models:
 
   # --- keyframes (text to image) ---
   flux1-schnell:
+    weights_gb: 34
+    vram_gb: 32.3  # measured peak
     est_seconds: 1.3  # measured
     kind: t2i
     license: Apache-2.0
@@ -206,6 +219,9 @@ models:
       max_sequence_length: 256
 
   qwen-image:
+    cpu_offload: true
+    weights_gb: 58
+    vram_gb: 45  # estimate, needs cpu_offload
     est_seconds: 25  # guess
     kind: t2i
     license: Apache-2.0
@@ -224,6 +240,9 @@ models:
   # Qwen-Image with an abliterated copy of its text encoder (Qwen2.5-VL 7B), so
   # prompts are not softened before they reach the image model.
   qwen-image-abliterated:
+    cpu_offload: true
+    weights_gb: 58
+    vram_gb: 45  # estimate, needs cpu_offload
     est_seconds: 25  # guess
     kind: t2i
     license: Apache-2.0
@@ -244,6 +263,8 @@ models:
       negative_prompt: " "
 
   flux1-dev:
+    weights_gb: 34
+    vram_gb: 33  # estimate
     est_seconds: 10  # guess
     kind: t2i
     license: FLUX.1 [dev] Non-Commercial
@@ -258,6 +279,8 @@ models:
 
   # --- shots (image to video) ---
   wan2.2-i2v-a14b:
+    weights_gb: 70
+    vram_gb: 30.5  # measured with cpu_offload: 30.5 GB GPU, about 70 GB RAM
     est_seconds: 1455  # measured, 40 steps with offload
     kind: i2v
     license: Apache-2.0
@@ -276,6 +299,8 @@ models:
   # Measured on the L40 with cpu_offload on: 645 s per shot, 15.9 GB peak VRAM.
   # It fits in VRAM, so try cpu_offload: false, 832x480 or fewer steps for speed.
   wan2.2-ti2v-5b:
+    weights_gb: 22
+    vram_gb: 15.9  # measured with cpu_offload
     est_seconds: 645  # measured, 50 steps with offload
     kind: i2v
     license: Apache-2.0
@@ -293,6 +318,9 @@ models:
     vae_tiling: true
 
   wan2.1-i2v-14b-480p:
+    cpu_offload: true
+    weights_gb: 41
+    vram_gb: 30  # estimate, needs cpu_offload
     est_seconds: 900  # guess
     kind: i2v
     license: Apache-2.0
@@ -309,6 +337,8 @@ models:
     guidance: 5.0
 
   ltx-0.9.7-distilled:
+    weights_gb: 36
+    vram_gb: 38.5  # measured peak
     est_seconds: 20  # measured
     kind: i2v
     license: LTX-Video Open Weights (paid license above a revenue threshold)
@@ -329,6 +359,8 @@ models:
     vae_tiling: true
 
   hunyuanvideo-i2v:
+    weights_gb: 43
+    vram_gb: 30  # estimate with cpu_offload
     est_seconds: 600  # guess
     kind: i2v
     license: Tencent Hunyuan Community (excludes EU, UK, South Korea)
@@ -348,6 +380,8 @@ models:
 
   # --- keyframes from the viewer's photo (image edit) ---
   flux1-kontext-dev:
+    weights_gb: 34
+    vram_gb: 34  # estimate
     est_seconds: 10  # guess
     kind: edit
     license: FLUX.1 [dev] Non-Commercial
@@ -361,6 +395,9 @@ models:
     guidance: 2.5
 
   qwen-image-edit-2509:
+    cpu_offload: true
+    weights_gb: 58
+    vram_gb: 45  # estimate, needs cpu_offload
     est_seconds: 60  # guess
     kind: edit
     license: Apache-2.0
@@ -378,6 +415,9 @@ models:
 
   # The same edit model with the abliterated text encoder.
   qwen-image-edit-2509-abliterated:
+    cpu_offload: true
+    weights_gb: 58
+    vram_gb: 45  # estimate, needs cpu_offload
     est_seconds: 60  # guess
     kind: edit
     license: Apache-2.0

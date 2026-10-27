@@ -7,7 +7,6 @@ planner and pan renderer work without the GPU stack.
 
 from __future__ import annotations
 
-import gc
 
 from PIL import Image
 
@@ -47,12 +46,22 @@ def _generator(seed: int):
     return torch.Generator(device="cuda").manual_seed(seed)
 
 
-def _unload(pipe) -> None:
-    import torch
+def _unload(renderer) -> None:
+    """Free a renderer's pipeline from GPU and host memory."""
+    from bvg import memory
 
+    pipe, renderer.pipe = renderer.pipe, None
+    if pipe is None:
+        return
+    if hasattr(pipe, "remove_all_hooks"):  # CPU offload hooks hold references to the weights
+        pipe.remove_all_hooks()
+    for name in list(getattr(pipe, "components", {})):
+        try:
+            setattr(pipe, name, None)
+        except Exception:  # a pipeline that won't drop a component still frees it when collected
+            pass
     del pipe
-    gc.collect()
-    torch.cuda.empty_cache()
+    memory.release()
 
 
 def frames_for(seconds: float, fps: int, multiple: int) -> int:
@@ -73,8 +82,7 @@ class KeyframeRenderer:
                          generator=_generator(seed), **guidance, **s.get("extra_kwargs", {})).images[0]
 
     def unload(self) -> None:
-        _unload(self.pipe)
-        self.pipe = None
+        _unload(self)
 
 
 class ImageToVideoRenderer:
@@ -99,8 +107,7 @@ class ImageToVideoRenderer:
         return self.pipe(**kwargs).frames[0]
 
     def unload(self) -> None:
-        _unload(self.pipe)
-        self.pipe = None
+        _unload(self)
 
 
 class EditRenderer:
@@ -118,5 +125,4 @@ class EditRenderer:
                          **s.get("extra_kwargs", {})).images[0]
 
     def unload(self) -> None:
-        _unload(self.pipe)
-        self.pipe = None
+        _unload(self)

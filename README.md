@@ -24,7 +24,7 @@ Before starting, the viewer can also:
 
 - **Upload a photo of the protagonist.** Every keyframe that shows the hero is then drawn by an image-edit model (FLUX.1 Kontext by default, Qwen-Image-Edit as an Apache-2.0 alternative) from that photo, so the hero keeps that face. The app asks the viewer to confirm the photo is of them or that they have the person's permission.
 - **Pick the sound.** A narration voice (Kokoro, a small TTS model that runs on the CPU while the GPU renders video), music, and captions, each optional. Music comes from files in `assets/music/` (mp3, wav, ogg, flac, m4a), or a soft synthesized pad when the folder is empty. It dips while the narrator speaks.
-- **Pick the models** for stills, video, quality shots and the photo edit, from the catalog in `configs/profiles.yaml`. Planning uses each model's `est_seconds`; a model loads the first time a film uses it, and up to `server.max_loaded_models` (default 3) stay in host RAM.
+- **Pick the models** for stills, video, quality shots and the photo edit, from the catalog in `configs/profiles.yaml`. Planning uses each model's `est_seconds`; the app shows a memory forecast for the picks (see Memory below).
 
 Install the narration voice with `pip install -e ".[audio]"`.
 
@@ -41,7 +41,7 @@ Choices made for the demo (all easy to change):
 | Keyframes | FLUX.1-schnell, 768x512 | 1.3 s per image on the L40 |
 | Video | LTX-Video 0.9.7 distilled | 20 s per 5 s shot, the only measured model fast enough for every profile |
 | Hero shots | Effectively off | Wan 2.2 A14B took 1455 s per shot; the planner only fits 2 in `quality` |
-| GPU sharing | Both models loaded with CPU offload | FLUX (32 GB) and LTX (38.5 GB) don't fit in 48 GB together, and reloading per act would take minutes |
+| GPU sharing | One model in memory at a time, jobs grouped by model | FLUX (34 GB) and LTX (36 GB) together don't fit in 62 GB of RAM next to anything else |
 | Story text | A local LLM (Qwen3 8B through Ollama) writes text, choices and prompts | Every film differs in more than the six answers; a plain fallback writer takes over if the LLM fails |
 | Sound | Kokoro narration on the CPU, music files or a synthesized pad | Keeps the GPU free for video; no music model yet |
 | Character consistency | Only with an uploaded photo | Without a photo each shot is drawn from the prompt alone, so the hero changes look between shots |
@@ -61,6 +61,16 @@ python -m bvg.server --host 0.0.0.0             # uses story.base_url, http://12
 - **GPU memory**: an 8B model takes about 6 GB of VRAM next to the video models. To keep the GPU entirely for video, run it on the CPU with `extra_body: {options: {num_gpu: 0}}` (slower: tens of seconds per act).
 - **Timing**: after each choice the writer makes two calls on its own thread, the next act's text (what the viewer waits for) and the shot prompts for the act just chosen (what the GPU waits for).
 - **Without an LLM**: `--writer simple` uses plain placeholder text and is the default with `--mock`; `python -m bvg.server --mock --writer llm` tests the real writer with placeholder images. If an LLM call fails, the simple writer covers that step and the premiere shows it.
+
+## Memory
+
+With `server.residency: sequential` (the default) the server holds one model at a time: it loads a model, renders every ready job that needs it, frees it from the GPU and RAM, then loads the next. The worker picks jobs to keep the loaded model busy (a video shot whose keyframe is ready runs before a keyframe that would need a switch), so a film usually costs one switch per act. Models are freed when a film finishes. `residency: swap` keeps all of a film's models in RAM instead, for faster switches when RAM allows.
+
+- **Live monitor**: the app's header shows GPU and RAM in use, the loaded model, and any LLM Ollama is holding (`GET /api/memory`). The server logs a warning when free RAM drops under `server.memory_reserve_gb`, and logs memory after every model load.
+- **Forecast**: as soon as models, length or profile change, the app shows the peak GPU memory and RAM the film will need (`POST /api/memory/forecast`), from each catalog entry's `weights_gb` (RAM to hold it) and `vram_gb` (GPU peak). If a model won't fit, it says which and why, and with `server.block_on_overflow` the server refuses to start that film. `python -m bvg.memory --model hero=wan2.2-i2v-a14b` prints the same from the command line.
+- The LLM writer counts against the GPU when `story.device: gpu`, or against RAM with `cpu`. Qwen3.8 27B (18 GB) next to LTX (38.5 GB) doesn't fit on the 48 GB GPU, for example; run it on the CPU or pick a smaller writer.
+
+Footprints marked `measured` in the catalog come from the L40 benchmark; the rest are estimates from the weight sizes, so treat a close call as a maybe.
 
 ## Layout
 

@@ -246,3 +246,56 @@ def test_shot_count_is_bounded(tmp_path):
     client = _client(tmp_path)
     assert client.post("/api/sessions", json={"shots": 5}).status_code == 400
     assert client.post("/api/sessions", json={"shots": 500}).status_code == 400
+
+
+def _snap(gpu_total=48.0, ram_free=60.0):
+    return {"gpu": {"total_gb": gpu_total, "free_gb": gpu_total, "process_gb": 0},
+            "ram": {"total_gb": 62.0, "free_gb": ram_free, "process_gb": 1}, "llm": []}
+
+
+def test_memory_forecast_sequential_vs_swap():
+    from bvg import memory
+    from bvg.config import load_config
+    from bvg.models import select_model, stage_settings
+
+    config = load_config()
+    stages = ["keyframe", "standard", "story"]
+    settings = {s: stage_settings(config, s) for s in stages}
+    seq = memory.forecast(settings, "sequential", _snap(), used_stages=["keyframe", "standard"])
+    assert seq["fits"] and seq["peak_vram_gb"] == 38.5 + 5  # LTX plus the 8B writer on the GPU
+    assert seq["peak_ram_gb"] == 36  # the largest model alone
+    swap = memory.forecast(settings, "swap", _snap(), used_stages=["keyframe", "standard"])
+    assert not swap["fits"] and swap["peak_ram_gb"] == 34 + 36  # FLUX and LTX together
+    select_model(config, "story", "qwen3.8-27b-abliterated")
+    big = memory.forecast({**settings, "story": stage_settings(config, "story")}, "sequential", _snap(),
+                          used_stages=["keyframe", "standard"])
+    assert [w.split()[0] for w in big["warnings"]] == ["flux1-schnell", "ltx-0.9.7-distilled"]  # + 18 GB > 44
+    cpu = memory.forecast({**settings, "story": stage_settings(config, "story")}, "sequential", _snap(),
+                          used_stages=["keyframe", "standard"], llm_device="cpu")
+    assert cpu["fits"] and cpu["peak_ram_gb"] == 36 + 18
+
+
+def test_scheduler_batches_jobs_by_loaded_model(tmp_path):
+    pytest.importorskip("fastapi")
+    from bvg.server import FINISH, KEYFRAME, VIDEO
+
+    from bvg.config import load_config
+    from bvg.engine import Engine
+    from bvg.server import App, SessionIn
+
+    config = load_config()
+    config["server"]["outputs"] = str(tmp_path)
+    config["story"]["writer"] = "simple"
+    app = App(config, Engine(config, mock=True), None)
+    session = app.create(SessionIn(shots=6, profile="quality"))
+    shots = sorted(session.shots.values(), key=lambda s: s.act)
+    a, b = shots[0], shots[1]
+    a.status, b.status = "rendering", "queued"  # a's keyframe is done, b's isn't
+    items = [(KEYFRAME, 2, session.id, b.act, b.index), (VIDEO, 1, session.id, a.act, a.index),
+             (VIDEO, 3, session.id, b.act, b.index), (FINISH, 4, session.id, -1, -1)]
+    std = app.engine.model_key(session.settings[a.render_type])
+    app.engine._loaded[std] = object()  # pretend the video model is loaded
+    assert app._pick(items) == items[1]  # video with the loaded model beats a keyframe that needs a switch
+    app.engine._loaded.clear()
+    assert app._pick(items) == items[0]  # nothing loaded: keyframes first
+    assert app._pick([items[2], items[3]]) is None  # b's video waits for its keyframe, the finish for b

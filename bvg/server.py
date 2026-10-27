@@ -43,7 +43,7 @@ from pydantic import BaseModel
 import numpy as np
 from PIL import Image
 
-from bvg import audio
+from bvg import audio, memory
 from bvg.config import Costs, load_config, load_costs, load_profile
 from bvg.engine import Engine
 from bvg.models import (TOP_LEVEL_STAGES, ModelPolicyError, apply_overrides, models_by_kind, select_model,
@@ -93,6 +93,7 @@ class Session:
     film_status: str = "waiting"  # waiting -> stitching -> done | failed
     film_ready_at: float | None = None
     writer: object = None  # this film's story writer (bvg.writer)
+    forecast: dict | None = None  # predicted peak memory (bvg.memory.forecast)
     writer_steps: list[str] = field(default_factory=list)  # "llm", "fallback" or "simple", per writer call
     error: str | None = None
 
@@ -118,6 +119,39 @@ class SessionIn(BaseModel):
     photo_consent: bool = False
 
 
+class Jobs:
+    """GPU jobs waiting to run. The worker picks the next one with App._pick, not just by priority."""
+
+    def __init__(self):
+        self.items: list[tuple] = []
+        self.cv = threading.Condition()
+
+    def put(self, job: tuple) -> None:
+        with self.cv:
+            self.items.append(job)
+            self.cv.notify()
+
+    def take(self, pick) -> tuple:
+        with self.cv:
+            while True:
+                job = pick(self.items) if self.items else None
+                if job is not None:
+                    self.items.remove(job)
+                    return job
+                self.cv.wait(timeout=0.5)  # a keyframe finishing elsewhere can make a video job ready
+
+    def pending(self, sid: str) -> int:
+        with self.cv:
+            return sum(j[2] == sid for j in self.items)
+
+
+class ForecastIn(BaseModel):
+    models: dict[str, str] = {}
+    profile: str = "fast"
+    shots: int | None = None
+    photo: bool = False
+
+
 class App:
     def __init__(self, config: dict, engine: Engine, bench: str | None, writer=None):
         self.config = config
@@ -133,7 +167,12 @@ class App:
         self.idle_seconds = server.get("idle_lease_minutes", 15) * 60
         self.outputs = Path(server.get("outputs", "outputs/sessions"))
         self.sessions: dict[str, Session] = {}
-        self.jobs: queue.PriorityQueue = queue.PriorityQueue()
+        self.jobs = Jobs()
+        self.reserve_gb = server.get("memory_reserve_gb", 4)
+        self.block_on_overflow = server.get("block_on_overflow", True)
+        self.unload_when_idle = server.get("unload_when_idle", True)
+        self.monitor = memory.Monitor(server.get("memory_monitor_seconds", 5), self.reserve_gb,
+                                      config.get("story", {}).get("base_url")).start()
         self.seq = itertools.count()
         self.lock = threading.Lock()
         threading.Thread(target=self._worker, daemon=True).start()
@@ -165,19 +204,19 @@ class App:
             voice = None if body.voice in (None, "", "off") else body.voice
             if voice is not None and voice not in audio.VOICES:
                 raise HTTPException(400, f"unknown voice {voice!r}")
-            profile = load_profile(self.config, body.profile)
-            counts = split_shots(total)
-            # Shot priorities aren't written yet; plan with the first and last shot of each act weighted higher.
-            planned = [Shot(act=a, index=i, priority=0.8 if i in (0, n - 1) else 0.5)
-                       for a, n in enumerate(counts) for i in range(n)]
-            plan = plan_film(planned, costs, profile, self.config["film"]["seconds_per_choice"])
+            counts, plan = self._plan(body.profile, total, costs)
+            forecast = self.forecast(settings, plan, photo is not None)
+            if not forecast["fits"]:
+                log.warning("memory forecast: %s", "; ".join(forecast["warnings"]))
+                if self.block_on_overflow and not self.engine.mock:  # mock mode loads no models
+                    raise HTTPException(400, "Not enough memory for these models: " + "; ".join(forecast["warnings"]))
             sid = uuid.uuid4().hex[:10]
             story = StoryState(style=body.style, shot_counts=counts, has_photo=photo is not None)
             session = Session(id=sid, story=story, profile=body.profile, shot_total=total,
                               shots={(s.act, s.index): ShotState(s.act, s.index, s.render_type) for s in plan.shots},
                               dir=self.outputs / sid, settings=settings, costs=costs, voice=voice,
                               music=body.music, captions=body.captions, photo=photo,
-                              writer=self.writer or make_writer(settings["story"]))
+                              writer=self.writer or make_writer(settings["story"]), forecast=forecast)
             session.dir.mkdir(parents=True, exist_ok=True)
             if photo is not None:
                 photo.save(session.dir / "photo.png")
@@ -187,6 +226,31 @@ class App:
                      body.profile, f"{total} shots", {k: v.get("model_name") for k, v in settings.items()}, voice,
                      photo is not None, plan.counts())
             return session
+
+    def _plan(self, profile_name: str, total: int, costs: Costs):
+        profile = load_profile(self.config, profile_name)
+        counts = split_shots(total)
+        # Shot priorities aren't written yet; plan with the first and last shot of each act weighted higher.
+        planned = [Shot(act=a, index=i, priority=0.8 if i in (0, n - 1) else 0.5)
+                   for a, n in enumerate(counts) for i in range(n)]
+        return counts, plan_film(planned, costs, profile, self.config["film"]["seconds_per_choice"])
+
+    def forecast(self, settings: dict[str, dict], plan, has_photo: bool) -> dict:
+        """Predicted peak memory of a film with these models, against what is free now."""
+        used = ["keyframe"] + (["photo"] if has_photo else [])
+        used += [rt for rt, n in plan.counts().items() if n and rt != "pan"]
+        catalog = self.config.get("models", {})
+        # Models this server holds now are freed before the film's first load.
+        held = sum(float(catalog.get(name, {}).get("weights_gb") or 0) for _, name in self.engine.loaded)
+        snap = self.monitor.sample()
+        return memory.forecast(settings, self.engine.residency, snap, used_stages=used, reserve_gb=self.reserve_gb,
+                               llm_device=self.config.get("story", {}).get("device", "gpu"), held_ram_gb=held)
+
+    def forecast_for(self, body: "ForecastIn") -> dict:
+        settings, costs = self._film_models(body.models)
+        film = self.config["film"]
+        _, plan = self._plan(body.profile, body.shots or film["shots"], costs)
+        return {**self.forecast(settings, plan, body.photo), "plan": plan.counts()}
 
     def _film_models(self, picks: dict[str, str]) -> tuple[dict[str, dict], Costs]:
         """Settings per stage and planning costs for this film's model picks."""
@@ -320,6 +384,7 @@ class App:
             "eta_seconds": round(self.eta(session)),
             "wait_after_last_choice": (round(session.film_ready_at - session.last_choice_at)
                                        if session.film_ready_at and session.last_choice_at else None),
+            "memory_forecast": session.forecast,
             "error": session.error,
         }
 
@@ -345,11 +410,15 @@ class App:
 
     def _worker(self) -> None:
         while True:
-            kind, _, sid, act, index = self.jobs.get()
+            kind, _, sid, act, index = self.jobs.take(self._pick)
             session = self.sessions[sid]
             try:
                 if kind == FINISH:
                     self._finish(session)
+                    if self.unload_when_idle and not self.jobs.items:
+                        self.engine.unload_all()  # free RAM and GPU between films
+                elif kind == VIDEO and session.shots[(act, index)].status == "failed":
+                    pass  # its keyframe failed
                 else:
                     self._render(session, kind, session.shots[(act, index)])
             except Exception as e:  # keep serving other jobs
@@ -360,6 +429,41 @@ class App:
                 else:
                     session.shots[(act, index)].status = "failed"
             self._save(session)
+
+    def _needs(self, job: tuple) -> tuple | None:
+        """The pipeline a job needs, or None (pans, stitching)."""
+        kind, _, sid, act, index = job
+        if kind == FINISH:
+            return None
+        session = self.sessions[sid]
+        shot = session.shots[(act, index)]
+        if kind == KEYFRAME:
+            stage = "photo" if session.photo is not None and shot.photo_prompt else "keyframe"
+        else:
+            stage = shot.render_type
+        return self.engine.model_key(session.settings[stage])
+
+    def _pick(self, items: list[tuple]) -> tuple | None:
+        """The next job: one whose inputs are ready, preferring the model already loaded.
+
+        Keyframes come before video and earlier acts before later ones, but a job that
+        needs a different model waits until nothing ready uses the loaded one, so with
+        sequential residency a model is loaded once per batch instead of once per job.
+        """
+        ready = []
+        for job in items:
+            kind, _, sid, act, index = job
+            session = self.sessions[sid]
+            if kind == VIDEO and session.shots[(act, index)].status in ("queued", "keyframe"):
+                continue  # its keyframe isn't rendered yet
+            if kind == FINISH and any(j[2] == sid and j[0] != FINISH for j in items):
+                continue
+            ready.append(job)
+        if not ready:
+            return None
+        loaded = set(self.engine.loaded)
+        cheap = [j for j in ready if (key := self._needs(j)) is None or key in loaded]
+        return min(cheap or ready)
 
     def _render(self, session: Session, kind: int, shot: ShotState) -> None:
         seed = zlib.crc32(f"{session.id}:{shot.act}:{shot.index}".encode())
@@ -421,6 +525,16 @@ def build(app_state: App) -> FastAPI:
                 "busy": bool(busy), "eta_seconds": app_state.eta(busy) if busy else 0,
                 "mock": app_state.engine.mock}
 
+    @api.get("/api/memory")
+    def memory_now():
+        m = app_state.monitor
+        return {"now": m.latest, "low": m.low, "residency": app_state.engine.residency,
+                "loaded": [name for _, name in app_state.engine.loaded]}
+
+    @api.post("/api/memory/forecast")
+    def memory_forecast(body: ForecastIn):
+        return app_state.forecast_for(body)
+
     @api.post("/api/sessions", status_code=201)
     def create(body: SessionIn):
         return app_state.public(app_state.create(body))
@@ -465,7 +579,8 @@ def main() -> None:
     # Mock runs use the simple writer unless --writer llm asks for the real one.
     config["story"]["writer"] = args.writer or ("simple" if args.mock else config["story"].get("writer", "llm"))
     if args.preload:
-        engine.preload([stage_settings(config, "keyframe"), stage_settings(config, "standard")])
+        # Only the first model a film needs; with sequential residency a second would replace it.
+        engine.preload([stage_settings(config, "keyframe")])
     import uvicorn
 
     uvicorn.run(build(App(config, engine, args.bench)), host=args.host, port=args.port)

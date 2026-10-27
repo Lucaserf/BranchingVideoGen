@@ -6,17 +6,23 @@ the whole app can be tried on a laptop.
 
 from __future__ import annotations
 
+import logging
 import subprocess
 import textwrap
+import threading
+import time
 from collections import OrderedDict
 from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
+from bvg import memory
 from bvg.renderers import make_shot_renderer
 from bvg.renderers.pan import PanRenderer
 from bvg.video import ffmpeg_exe, write_mp4
+
+log = logging.getLogger("bvg.engine")
 
 
 def fit(image: Image.Image, width: int, height: int) -> Image.Image:
@@ -94,22 +100,39 @@ class Engine:
         self.width, self.height, self.fps = film["width"], film["height"], film["fps"]
         self.shot_seconds = film["shot_seconds"]
         server = config.get("server", {})
-        self.offload_all = server.get("offload_all", True)
-        self.swap = server.get("swap_models", False)
-        # Pipelines kept loaded (in host RAM with swap_models), least recently used first.
-        self.max_loaded = server.get("max_loaded_models", 3)
+        # sequential: one pipeline in memory at all; swap: several in host RAM, one on the GPU.
+        self.residency = server.get("residency", "sequential")
+        self.swap = self.residency == "swap"
+        self.max_loaded = 1 if self.residency == "sequential" else server.get("max_loaded_models", 3)
+        # Pipelines kept loaded, least recently used first.
         self._loaded: OrderedDict[tuple, object] = OrderedDict()
         self._on_gpu = None
+        self.lock = threading.Lock()
+
+    @staticmethod
+    def model_key(settings: dict) -> tuple | None:
+        """Which pipeline a job needs, or None for jobs that need no model (pans)."""
+        if settings.get("backend") in (None, "pan") or not settings.get("model_name"):
+            return None
+        return (settings["backend"], settings["model_name"])
+
+    @property
+    def loaded(self) -> list[tuple]:
+        return list(self._loaded)
 
     def _prepare(self, settings: dict) -> dict:
         settings = dict(settings)
-        if settings.get("cpu_offload"):
-            return settings
-        if self.swap:
-            settings["device"] = "cpu"
-        elif self.offload_all:
-            settings["cpu_offload"] = True
+        if self.swap and not settings.get("cpu_offload"):
+            settings["device"] = "cpu"  # parked in RAM, moved to the GPU per job
         return settings
+
+    def _evict(self) -> None:
+        _, old = self._loaded.popitem(last=False)
+        if old is self._on_gpu:
+            self._on_gpu = None
+        old.unload()
+        del old
+        memory.release()
 
     def _renderer(self, settings: dict):
         """The loaded pipeline for these settings, loading it (and evicting the oldest) if needed."""
@@ -117,15 +140,13 @@ class Engine:
         if key in self._loaded:
             self._loaded.move_to_end(key)
             return self._loaded[key]
-        while len(self._loaded) >= self.max_loaded:
-            _, old = self._loaded.popitem(last=False)
-            if old is self._on_gpu:
-                self._on_gpu = None
-            old.unload()
+        while len(self._loaded) >= self.max_loaded:  # free first, so two models never overlap in memory
+            self._evict()
         from bvg.renderers.diffusers_backend import EditRenderer, KeyframeRenderer
 
         backend = settings["backend"]
         prepared = self._prepare(settings)
+        start = time.time()
         if backend == "diffusers_t2i":
             renderer = KeyframeRenderer(prepared)
         elif backend == "diffusers_edit":
@@ -133,7 +154,12 @@ class Engine:
         else:
             renderer = make_shot_renderer(prepared)
         self._loaded[key] = renderer
+        log.info("loaded %s in %.0f s (%s)", key[1], time.time() - start, memory.describe(memory.snapshot()))
         return renderer
+
+    def unload_all(self) -> None:
+        while self._loaded:
+            self._evict()
 
     def _to_gpu(self, renderer) -> None:
         """With swap_models on, keep one pipeline on the GPU and park the others in host RAM."""
