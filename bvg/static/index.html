@@ -21,6 +21,10 @@
   button.card, .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; color: var(--text);
     padding: 16px; text-align: left; font: inherit; cursor: pointer; }
   button.card:hover { border-color: var(--accent); }
+  .shots-row { gap: 12px; align-items: center; flex-wrap: wrap; }
+  #shots { flex: 1; min-width: 160px; accent-color: var(--accent); }
+  #shots-n { width: 72px; background: var(--panel); color: var(--text); border: 1px solid var(--line);
+             border-radius: 8px; padding: 6px 8px; font: inherit; }
   button.card.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
   button.primary { background: var(--accent); color: var(--accent-ink); border: 0; border-radius: 8px; padding: 12px 22px;
     font: 600 16px system-ui, sans-serif; cursor: pointer; }
@@ -60,7 +64,7 @@
 <main>
   <div class="eyebrow">A film made only for you</div>
   <h1>Your Hero's Journey</h1>
-  <p class="muted" id="subtitle">Six choices. One three-minute film, rendered while you play.</p>
+  <p class="muted" id="subtitle">Six choices. One film made from them, rendered while you play.</p>
 
   <div id="start">
     <section>
@@ -69,7 +73,12 @@
     </section>
     <section>
       <h2>Film length</h2>
-      <div class="grid" id="lengths"></div>
+      <p class="muted" id="shots-help"></p>
+      <div class="row shots-row">
+        <input type="range" id="shots" step="1">
+        <input type="number" id="shots-n" step="1">
+        <span id="shots-out"></span>
+      </div>
     </section>
     <section>
       <h2>Rendering profile</h2>
@@ -145,7 +154,7 @@
 <script>
 const $ = (id) => document.getElementById(id);
 const esc = (t) => String(t).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
-let meta = null, session = null, pick = { style: "animated", length: "full", profile: "fast" }, pollTimer = null;
+let meta = null, session = null, pick = { style: "animated", shots: 36, profile: "fast" }, pollTimer = null;
 let photo = null;
 const STAGES = [["story", "llm", "Story writer (LLM)"], ["keyframe", "t2i", "Image model (stills)"], ["standard", "i2v", "Video model"],
                 ["hero", "i2v", "Quality shots model"], ["photo", "edit", "Photo model (your face in the scene)"]];
@@ -181,8 +190,22 @@ async function init() {
   meta = await api("/api/meta");
   if (meta.mock) $("subtitle").textContent += " (mock mode: placeholder images, no GPU)";
   cards($("styles"), Object.entries(meta.styles), "style");
-  cards($("lengths"), [["full", "Full"], ["short", "Short"]], "length",
-        (v) => v === "full" ? "36 shots, about 3 minutes" : "18 shots, about 90 seconds");
+  const sh = meta.shots;
+  pick.shots = sh.shots;
+  $("shots-help").textContent = `Each shot is one image prompt and ${sh.shot_seconds} seconds of film, ` +
+    `split across the six steps of the story.`;
+  const setShots = (v) => {
+    v = Math.max(sh.min_shots, Math.min(sh.max_shots, Math.round(Number(v) || sh.shots)));
+    pick.shots = v;
+    $("shots").value = $("shots-n").value = v;
+    const secs = v * sh.shot_seconds;
+    $("shots-out").textContent = `shots · ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")} of film`;
+  };
+  for (const id of ["shots", "shots-n"]) {
+    Object.assign($(id), { min: sh.min_shots, max: sh.max_shots });
+    $(id).oninput = (e) => setShots(e.target.value);
+  }
+  setShots(sh.shots);
   cards($("profiles"), Object.entries(meta.profiles).map(([k, m]) => [k, k[0].toUpperCase() + k.slice(1)]), "profile",
         (k) => `Ready about ${meta.profiles[k]} min after your last choice`);
   $("voice").innerHTML = `<option value="off">No narration</option>` + Object.entries(meta.voices)
@@ -310,7 +333,7 @@ function render() {
         <p class="muted">${esc(a.intro)}</p><p class="answer">→ ${esc(a.answer)}</p>`).join("")}</div>
       <div class="card values"><strong>Your fingerprint</strong>${Object.entries(s.values).map(([k, v]) => `
         <div><span class="muted">${k}</span><div class="bar"><div style="width:${100 * Math.max(0, v) / max}%"></div></div><span>${v}</span></div>`).join("")}
-        <p class="muted">Style: ${meta.styles[s.style]} · ${s.length} · ${s.profile}<br>
+        <p class="muted">Style: ${meta.styles[s.style]} · ${s.shots_total} shots (${Math.floor(s.film_seconds / 60)}:${String(s.film_seconds % 60).padStart(2, "0")}) · ${s.profile}<br>
           Story written by: ${s.writer === "llm" ? `the LLM (${esc(s.models.story)})` : s.writer === "fallback" ? `the LLM (${esc(s.models.story)}), with placeholder text where it failed` : "placeholder writer (no LLM)"}<br>
           Models: ${esc(s.models.keyframe)}, ${esc(s.models.standard)}${s.photo ? `, ${esc(s.models.photo)} (your photo)` : ""}<br>
           Sound: ${s.voice ? esc(meta.voices[s.voice] || s.voice) : "no narration"}${s.music ? ", music" : ""}</p>

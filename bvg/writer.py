@@ -104,12 +104,12 @@ The viewer just answered beat {answered + 1}."""]
 
 
 def _shots_prompt(state: StoryState, act_index: int) -> str:
-    n = state.shots_per_act
+    n = state.shot_counts[act_index]
     return f"""{_context(state)}
 
-Write the {n} shots that film beat {act_index + 1} ({BEATS[act_index].title}) as the viewer answered it.
+Write the {n} shot{"s" if n > 1 else ""} that film beat {act_index + 1} ({BEATS[act_index].title}) as the viewer answered it.
 Each shot is 5 seconds. Together they tell this beat clearly; the first sets the scene, the last leads on.
-Return JSON: {{"shots": [{n} items of {{"prompt": "...", "narration": "...", "shows_hero": true, "priority": 0.5}}]}}
+Return JSON: {{"shots": [{n} item{"s" if n > 1 else ""} of {{"prompt": "...", "narration": "...", "shows_hero": true, "priority": 0.5}}]}}
 - prompt: one frame for an image model, at most 60 words: who, doing what, where, camera framing and light.
   Each prompt stands alone: repeat the full visual description of every character and place in it.
   No style words (the style is added later), no text or letters in the image.
@@ -261,7 +261,7 @@ class LLMWriter:
 
     def shots(self, state: StoryState, act_index: int) -> None:
         d = self.ask(_shots_prompt(state, act_index))
-        state.acts[act_index].shots = parse_shots(d, state.shots_per_act)
+        state.acts[act_index].shots = parse_shots(d, state.shot_counts[act_index])
 
 
 def _record(act: ActText):
@@ -305,11 +305,12 @@ class SimpleWriter:
         frames = (f"wide shot of {world}, {beat}", f"{hero} in {world}, {answer}", f"close-up of {hero}, {answer}",
                   f"{hero} reacting, {beat}, {world}", f"{answer}, dramatic moment in {world}",
                   f"{hero} looking ahead, {world}, {beat}")
+        n = state.shot_counts[act_index]
         state.acts[act_index].shots = [
             ShotSpec(prompt=frames[i % len(frames)], narration=(answer if i == 1 else BEATS[act_index].title) + ".",
                      shows_hero="hero" in frames[i % len(frames)] or hero in frames[i % len(frames)],
-                     priority=0.8 if i in (0, state.shots_per_act - 1) else 0.5)
-            for i in range(state.shots_per_act)]
+                     priority=0.8 if i in (0, n - 1) else 0.5)
+            for i in range(n)]
         return "simple"
 
     def _act(self, i: int) -> ActText:

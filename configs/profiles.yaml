@@ -6,7 +6,11 @@
 
 film:
   acts: 6
-  shots_per_act: 6
+  # Each shot (one image prompt, one video clip) lasts shot_seconds. The viewer
+  # picks how many shots the film has; they are split across the six beats.
+  shots: 36
+  min_shots: 6
+  max_shots: 72
   shot_seconds: 5
   # How long a viewer is expected to spend on each choice. Act N's shots can
   # start rendering once act N is locked, so this sets how much GPU time is

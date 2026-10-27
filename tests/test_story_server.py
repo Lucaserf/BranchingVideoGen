@@ -23,7 +23,7 @@ def _play(writer, state, answers):
 
 
 def test_simple_writer_builds_prompts_from_answers():
-    s = StoryState("noir", shots_per_act=3)
+    s = StoryState("noir", shot_counts=[3] * 6)
     _play(SimpleWriter(), s, [0, "a comet shaped like a key", 1, 0, 2, 1])
     assert len(s.acts) == len(BEATS)
     prompts = s.prompts(1)
@@ -85,7 +85,7 @@ def fake_llm():
 
 
 def test_llm_writer_writes_text_choices_and_prompts(fake_llm):
-    s = StoryState("anime", shots_per_act=3, has_photo=True)
+    s = StoryState("anime", shot_counts=[3] * 6, has_photo=True)
     _play(LLMWriter(fake_llm), s, [1, "I sing to the storm", 0, 0, 0, 0])
     assert s.title == "Glass and Thunder"
     assert s.acts[0].text.intro.startswith("Rain") and s.acts[0].text.options[1].label == "A smuggler"
@@ -102,7 +102,7 @@ def test_llm_writer_writes_text_choices_and_prompts(fake_llm):
 def test_fallback_writer_finishes_the_story_when_the_llm_fails(fake_llm):
     _FakeLLM.broken = True
     writer = FallbackWriter(LLMWriter(fake_llm), SimpleWriter())
-    s = StoryState("comic", shots_per_act=2)
+    s = StoryState("comic", shot_counts=[2] * 6)
     assert writer.opening(s) == "fallback"
     for act in range(len(BEATS)):
         s.choose(0)
@@ -140,7 +140,7 @@ def test_server_plays_a_short_film_in_mock_mode(tmp_path):
     pytest.importorskip("fastapi")
     pytest.importorskip("httpx")
     client = _client(tmp_path)
-    sid = client.post("/api/sessions", json={"style": "comic", "length": "short"}).json()["id"]
+    sid = client.post("/api/sessions", json={"style": "comic", "shots": 20}).json()["id"]
     assert client.post("/api/sessions", json={}).status_code == 409  # one viewer at a time
     for act in range(6):
         body = {"text": "a tiny dragon"} if act == 2 else {"option": 0}
@@ -148,7 +148,8 @@ def test_server_plays_a_short_film_in_mock_mode(tmp_path):
     assert client.post(f"/api/sessions/{sid}/choices", json={"option": 0}).status_code == 400  # story over
     state = _wait(client, sid)
     assert state["film_status"] == "done", state["error"]
-    assert state["shots_done"] == state["shots_total"] == 18
+    assert state["shots_done"] == state["shots_total"] == 20
+    assert state["shot_counts"] == [3, 3, 3, 4, 3, 4] and state["film_seconds"] == 20
     assert state["writer"] == "simple" and state["title"]
     assert any("a tiny dragon" in a.get("answer", "") for a in state["story"])
     assert client.get(state["film"]).status_code == 200
@@ -180,7 +181,7 @@ def test_film_with_photo_voice_music_and_model_picks(tmp_path):
     Image.new("RGB", (300, 400), "orange").save(buf, "JPEG")
     photo = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
 
-    body = {"length": "short", "photo": photo, "voice": "af_heart", "music": True,
+    body = {"shots": 6, "photo": photo, "voice": "af_heart", "music": True,
             "models": {"standard": "wan2.2-ti2v-5b", "photo": "qwen-image-edit-2509-abliterated",
                        "story": "qwen3.6-35b-a3b-abliterated"}}
     assert client.post("/api/sessions", json=body).status_code == 400  # photo without consent
@@ -228,3 +229,20 @@ def test_story_model_comes_from_the_catalog(fake_llm):
     qwen = make_writer({**stage_settings(load_config(), "story"), **fake_llm}).primary
     qwen.opening(StoryState("anime"))
     assert _FakeLLM.calls[-1].endswith(" /no_think")
+
+
+def test_split_shots_is_even_and_favors_the_climax():
+    from bvg.story import split_shots
+
+    assert split_shots(36) == [6] * 6
+    assert split_shots(8) == [1, 1, 1, 2, 1, 2]
+    assert sum(split_shots(71)) == 71
+    assert split_shots(2) == [1] * 6  # at least one shot per beat
+
+
+def test_shot_count_is_bounded(tmp_path):
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    client = _client(tmp_path)
+    assert client.post("/api/sessions", json={"shots": 5}).status_code == 400
+    assert client.post("/api/sessions", json={"shots": 500}).status_code == 400

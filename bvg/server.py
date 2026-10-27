@@ -49,14 +49,12 @@ from bvg.engine import Engine
 from bvg.models import (TOP_LEVEL_STAGES, ModelPolicyError, apply_overrides, models_by_kind, select_model,
                         stage_settings)
 from bvg.planner import Shot, plan_film
-from bvg.story import BEATS, STYLES, StoryState, beats_public
+from bvg.story import BEATS, STYLES, StoryState, beats_public, split_shots
 from bvg.writer import make_writer
 
 log = logging.getLogger("bvg.server")
 STATIC = Path(__file__).resolve().parent / "static"
 
-# Shots per act for each film length.
-LENGTHS = {"full": 6, "short": 3}
 KEYFRAME, VIDEO, FINISH = 0, 1, 2  # job priorities: lower runs first
 MODEL_STAGES = ("keyframe", "standard", "hero", "photo", "story")
 MAX_PHOTO_BYTES = 12 * 1024 * 1024
@@ -79,7 +77,7 @@ class Session:
     id: str
     story: StoryState
     profile: str
-    length: str
+    shot_total: int
     shots: dict[tuple[int, int], ShotState]
     dir: Path
     settings: dict[str, dict]  # per stage, from this film's model picks
@@ -111,7 +109,7 @@ class ChoiceIn(BaseModel):
 class SessionIn(BaseModel):
     style: str = "animated"
     profile: str = "fast"
-    length: str = "full"
+    shots: int | None = None  # number of shots (prompts), each film.shot_seconds long; None: film.shots
     models: dict[str, str] = {}  # stage -> catalog model, for this film only
     voice: str | None = None  # a narration voice id, or None / "off" for none
     music: bool = True
@@ -154,8 +152,10 @@ class App:
     def create(self, body: SessionIn) -> Session:
         if body.style not in STYLES:
             raise HTTPException(400, f"unknown style {body.style!r}")
-        if body.length not in LENGTHS:
-            raise HTTPException(400, f"unknown length {body.length!r}")
+        film = self.config["film"]
+        total = film["shots"] if body.shots is None else body.shots
+        if not film.get("min_shots", 6) <= total <= film.get("max_shots", 72):
+            raise HTTPException(400, f"shots must be between {film.get('min_shots', 6)} and {film.get('max_shots', 72)}")
         with self.lock:
             busy = self.active()
             if busy:
@@ -166,14 +166,14 @@ class App:
             if voice is not None and voice not in audio.VOICES:
                 raise HTTPException(400, f"unknown voice {voice!r}")
             profile = load_profile(self.config, body.profile)
-            n = LENGTHS[body.length]
+            counts = split_shots(total)
             # Shot priorities aren't written yet; plan with the first and last shot of each act weighted higher.
             planned = [Shot(act=a, index=i, priority=0.8 if i in (0, n - 1) else 0.5)
-                       for a in range(len(BEATS)) for i in range(n)]
+                       for a, n in enumerate(counts) for i in range(n)]
             plan = plan_film(planned, costs, profile, self.config["film"]["seconds_per_choice"])
             sid = uuid.uuid4().hex[:10]
-            story = StoryState(style=body.style, shots_per_act=n, has_photo=photo is not None)
-            session = Session(id=sid, story=story, profile=body.profile, length=body.length,
+            story = StoryState(style=body.style, shot_counts=counts, has_photo=photo is not None)
+            session = Session(id=sid, story=story, profile=body.profile, shot_total=total,
                               shots={(s.act, s.index): ShotState(s.act, s.index, s.render_type) for s in plan.shots},
                               dir=self.outputs / sid, settings=settings, costs=costs, voice=voice,
                               music=body.music, captions=body.captions, photo=photo,
@@ -184,7 +184,7 @@ class App:
             self.sessions[sid] = session
             self.writer_jobs.put((sid, -1))
             log.info("session %s: %s, %s, %s, models %s, voice %s, photo %s, plan %s", sid, body.style,
-                     body.profile, body.length, {k: v.get("model_name") for k, v in settings.items()}, voice,
+                     body.profile, f"{total} shots", {k: v.get("model_name") for k, v in settings.items()}, voice,
                      photo is not None, plan.counts())
             return session
 
@@ -303,7 +303,8 @@ class App:
         story = session.story
         current = story.current
         return {
-            "id": session.id, "style": story.style, "profile": session.profile, "length": session.length,
+            "id": session.id, "style": story.style, "profile": session.profile, "shot_counts": story.shot_counts,
+            "film_seconds": session.shot_total * self.config["film"]["shot_seconds"],
             "title": story.title, "act": story.act, "choices": story.choices, "values": story.values,
             "current": None if current is None else {
                 "beat": BEATS[story.act].title, "intro": current.intro, "question": current.question,
@@ -415,7 +416,9 @@ def build(app_state: App) -> FastAPI:
                 "default_voice": app_state.audio.get("voice", "af_heart") if narration_ok else None,
                 "music_files": [p.name for p in audio.music_files(app_state.audio.get("music_dir", "assets/music"))],
                 "profiles": {k: v["target_wait_minutes"] for k, v in app_state.config["profiles"].items()},
-                "lengths": list(LENGTHS), "busy": bool(busy), "eta_seconds": app_state.eta(busy) if busy else 0,
+                "shots": {k: app_state.config["film"].get(k, d) for k, d in
+                          (("shots", 36), ("min_shots", 6), ("max_shots", 72), ("shot_seconds", 5))},
+                "busy": bool(busy), "eta_seconds": app_state.eta(busy) if busy else 0,
                 "mock": app_state.engine.mock}
 
     @api.post("/api/sessions", status_code=201)

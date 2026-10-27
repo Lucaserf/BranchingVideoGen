@@ -18,7 +18,7 @@ python -m bvg.server --mock                          # any machine: placeholder 
 python -m bvg.server --host 0.0.0.0 --preload        # on the L40, real models
 ```
 
-Open http://localhost:8000 (on the server, forward the port: `ssh -L 8000:localhost:8000 <server>`). To play without a browser and get a film at the end: `python -m bvg.demo_play --length short`.
+Open http://localhost:8000 (on the server, forward the port: `ssh -L 8000:localhost:8000 <server>`). To play without a browser and get a film at the end: `python -m bvg.demo_play --shots 18`.
 
 Before starting, the viewer can also:
 
@@ -45,7 +45,7 @@ Choices made for the demo (all easy to change):
 | Story text | A local LLM (Qwen3 8B through Ollama) writes text, choices and prompts | Every film differs in more than the six answers; a plain fallback writer takes over if the LLM fails |
 | Sound | Kokoro narration on the CPU, music files or a synthesized pad | Keeps the GPU free for video; no music model yet |
 | Character consistency | Only with an uploaded photo | Without a photo each shot is drawn from the prompt alone, so the hero changes look between shots |
-| Film length | Full (36 shots, 3 min) or short (18 shots, 90 s) | Short makes testing faster |
+| Film length | The viewer picks the number of shots (6 to 72, default 36), each one image prompt and 5 s of film | Short films make testing faster; shots are split evenly across the six beats, extras go to the climax first |
 
 ### The story writer
 

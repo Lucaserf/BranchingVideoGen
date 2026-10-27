@@ -67,6 +67,19 @@ BEATS: tuple[Beat, ...] = (
 )
 
 
+# Which beats get the extra shots when the total doesn't divide by six: the climax first.
+SHOT_WEIGHT_ORDER = (3, 5, 1, 4, 2, 0)
+
+
+def split_shots(total: int, beats: int = len(BEATS)) -> list[int]:
+    """Shots per beat for a film of `total` shots: as even as possible, at least one each."""
+    total = max(beats, total)
+    counts = [total // beats] * beats
+    for i in range(total % beats):
+        counts[SHOT_WEIGHT_ORDER[i]] += 1
+    return counts
+
+
 @dataclass
 class Option:
     label: str
@@ -100,7 +113,7 @@ class ActRecord:
 @dataclass
 class StoryState:
     style: str
-    shots_per_act: int = 6
+    shot_counts: list[int] = field(default_factory=lambda: split_shots(36))  # shots in each act
     has_photo: bool = False
     title: str = ""
     # Visual descriptions the writer repeats in every prompt, so characters and places stay recognizable.

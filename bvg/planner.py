@@ -79,10 +79,10 @@ def plan_film(shots: list[Shot], costs: Costs, profile: Profile, seconds_per_cho
 
 def default_shots(config: dict) -> list[Shot]:
     """A placeholder shot list: the first and last shot of each act matter most."""
-    film = config["film"]
-    n = film["shots_per_act"]
+    from bvg.story import split_shots
+
     return [Shot(act=a, index=i, priority=0.8 if i in (0, n - 1) else 0.5)
-            for a in range(film["acts"]) for i in range(n)]
+            for a, n in enumerate(split_shots(config["film"]["shots"], config["film"]["acts"])) for i in range(n)]
 
 
 def main() -> None:

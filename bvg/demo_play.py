@@ -1,6 +1,6 @@
 """Play a story against a running server without a browser, then wait for the film.
 
-    python -m bvg.demo_play --url http://127.0.0.1:8000 --style anime --length short
+    python -m bvg.demo_play --url http://127.0.0.1:8000 --style anime --shots 18
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--url", default="http://127.0.0.1:8000")
     parser.add_argument("--style", default="animated")
-    parser.add_argument("--length", default="short")
+    parser.add_argument("--shots", type=int, default=18, help="number of shots, each film.shot_seconds long")
     parser.add_argument("--profile", default="fast")
     parser.add_argument("--seconds-per-choice", type=float, default=20, help="pause between choices, like a viewer")
     parser.add_argument("--free-text", default=None, help="use this as the answer for act 3 instead of an option")
@@ -38,7 +38,7 @@ def main() -> None:
 
     rng = random.Random(args.seed)
     meta = call(f"{args.url}/api/meta")
-    body = {"style": args.style, "length": args.length, "profile": args.profile, "voice": args.voice,
+    body = {"style": args.style, "shots": args.shots, "profile": args.profile, "voice": args.voice,
             "music": not args.no_music, "models": dict(m.split("=", 1) for m in args.model)}
     if args.photo:
         data = base64.b64encode(Path(args.photo).read_bytes()).decode()
