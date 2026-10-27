@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from PIL import Image
 
+from bvg import MODEL_LOAD_LOCK
+
 # Weight-only quantization (bitsandbytes) to fit big models on the GPU: about a quarter
 # (nf4) or half (int8) of the bf16 size, somewhat slower per step.
 QUANT_BACKENDS = {"nf4": "bitsandbytes_4bit", "int8": "bitsandbytes_8bit"}
@@ -23,6 +25,11 @@ def _quant_kwargs(mode: str, dtype) -> dict:
 
 
 def _load_pipeline(settings: dict):
+    with MODEL_LOAD_LOCK:
+        return _load_pipeline_unlocked(settings)
+
+
+def _load_pipeline_unlocked(settings: dict):
     import diffusers
     import torch
 
@@ -120,6 +127,7 @@ class ImageToVideoRenderer:
         kwargs = dict(prompt=prompt, negative_prompt=s.get("negative_prompt"), width=s["width"],
                       height=s["height"], num_frames=frames_for(seconds, s["fps"], s["frame_multiple"]),
                       num_inference_steps=s["steps"], guidance_scale=s["guidance"], generator=_generator(seed),
+                      output_type="pil",  # Wan defaults to float numpy frames
                       **s.get("extra_kwargs", {}))
         if s.get("call_style") == "ltx_condition":
             from diffusers.pipelines.ltx.pipeline_ltx_condition import LTXVideoCondition

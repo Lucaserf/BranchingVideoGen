@@ -62,6 +62,27 @@ python -m bvg.server --host 0.0.0.0             # uses story.base_url, http://12
 - **Timing**: after each choice the writer makes two calls on its own thread, the next act's text (what the viewer waits for) and the shot prompts for the act just chosen (what the GPU waits for).
 - **Without an LLM**: `--writer simple` uses plain placeholder text and is the default with `--mock`; `python -m bvg.server --mock --writer llm` tests the real writer with placeholder images. If an LLM call fails, the simple writer covers that step and the premiere shows it.
 
+### Running the server in the background
+
+Run it as a systemd user service, so it keeps going after you close the terminal or SSH:
+
+```bash
+cd ~/BranchingVideoGen
+systemd-run --user --unit=bvg-server --working-directory=$PWD \
+  --setenv=PATH=$PWD/.venv/bin:/usr/bin:/bin \
+  -p StandardOutput=append:$PWD/outputs/server.log -p StandardError=append:$PWD/outputs/server.log \
+  $PWD/.venv/bin/python -m bvg.server --host 0.0.0.0 --port 8000
+
+systemctl --user status bvg-server         # is it running?
+tail -f outputs/server.log                 # follow the log
+systemctl --user stop bvg-server           # stop (then start again after a git pull)
+systemctl --user reset-failed bvg-server   # if a start says "unit already exists"
+```
+
+Once, with sudo: `sudo loginctl enable-linger $USER`. Without it, systemd stops your user services when you have no session open on the machine.
+
+Without sudo, use tmux: `tmux new -s bvg`, start the server, then press Ctrl-b d to detach (`tmux attach -t bvg` to come back). It lasts until tmux is killed or the machine reboots.
+
 ## Memory
 
 With `server.residency: sequential` (the default) the server holds one model at a time: it loads a model, renders every ready job that needs it, frees it from the GPU and RAM, then loads the next. The worker picks jobs to keep the loaded model busy (a video shot whose keyframe is ready runs before a keyframe that would need a switch), so a film usually costs one switch per act. Models are freed when a film finishes. `residency: swap` keeps all of a film's models in RAM instead, for faster switches when RAM allows.

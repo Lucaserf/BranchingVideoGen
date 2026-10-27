@@ -256,9 +256,9 @@ def _snap(gpu_total=48.0, ram_free=60.0):
 def test_memory_forecast_sequential_vs_swap():
     from bvg import memory
     from bvg.config import load_config
-    from bvg.models import select_model, stage_settings
+    from bvg.models import apply_overrides, select_model, stage_settings
 
-    config = load_config()
+    config = apply_overrides(load_config(), ["keyframe=flux1-schnell", "standard=ltx-0.9.7-distilled"])
     stages = ["keyframe", "standard", "story"]
     settings = {s: stage_settings(config, s) for s in stages}
     seq = memory.forecast(settings, "sequential", _snap(), used_stages=["keyframe", "standard"])
@@ -348,3 +348,11 @@ def test_log_buffer_serves_lines_after_a_seq():
     lines = buf.since(0)
     assert [l["seq"] for l in lines] == [4, 5, 6] and lines[-1]["level"] == "WARNING"
     assert "line 4" in lines[1]["text"] and buf.since(5) == lines[2:]
+
+
+def test_options_without_a_label_key_still_parse():
+    from bvg.writer import parse_act
+
+    act = parse_act({"intro": "i", "question": "q", "options": [{"text": "Run", "values": {"courage": 1}},
+                                                                 {"option": "Hide"}, "Wait"]})
+    assert [o.label for o in act.options] == ["Run", "Hide", "Wait"] and act.options[0].values == {"courage": 1}

@@ -161,6 +161,9 @@ def parse_act(d: dict) -> ActText:
     for o in options[:3]:
         if isinstance(o, str):
             o = {"label": o}
+        elif isinstance(o, dict) and "label" not in o:  # small models name the key differently
+            o = {**o, "label": next((o[k] for k in ("text", "option", "choice", "title", "description", "name")
+                                     if isinstance(o.get(k), str)), None)}
         parsed.append(Option(label=_str(o, "label", 120), values=_values(o.get("values"))))
     return ActText(intro=_str(d, "intro", 600), question=_str(d, "question", 200), options=parsed)
 

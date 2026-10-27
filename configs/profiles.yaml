@@ -52,11 +52,12 @@ model_policy:
 # `--model standard=wan2.2-ti2v-5b`. Any key next to `model` overrides the
 # catalog defaults for that stage.
 keyframe:
-  model: flux1-schnell
+  model: qwen-image-abliterated-nf4
   width: 768
   height: 512
-  # Measured on the L40: 1.32 s per 832x480 image at 4 steps, 32.3 GB peak VRAM.
-  est_seconds_per_image: 1.3
+  # Measured on the L40: about 19 s per image (load 144 s cold, 12-60 s warm).
+  # flux1-schnell measured 1.32 s per 832x480 image.
+  est_seconds_per_image: 19
 
 render_types:
   # A slow camera move over the keyframe. Almost free, used to fit tight budgets.
@@ -70,20 +71,20 @@ render_types:
 
   # Fast image-to-video model, used for most shots.
   standard:
-    model: ltx-0.9.7-distilled
-    # Measured on the L40: 20.0 s per 121-frame shot, 38.5 GB peak VRAM.
-    est_seconds_per_shot: 20
+    model: wan2.1-i2v-14b-480p
+    # Measured on the L40: about 1500 s per shot (40 steps at 35 s with offload),
+    # 36.6 GB peak VRAM, 54 GB RAM. ltx-0.9.7-distilled measured 20 s per shot.
+    est_seconds_per_shot: 1500
 
   # Higher quality image-to-video model, used for the most important shots.
   # 40 steps without a distillation LoRA is slow (minutes per shot). To try a
   # 4-step distillation LoRA, set `lora` and `steps: 4`, `guidance: 1.0` here.
   hero:
-    model: wan2.2-i2v-a14b
+    model: wan2.1-i2v-14b-480p
     cpu_offload: true
-    # Measured on the L40: 1455 s per 81-frame shot at 40 steps with offload,
-    # 30.5 GB peak VRAM, about 70 GB host RAM. Too slow for any hero shot in
-    # `balanced`; needs a 4-step distillation LoRA to be useful.
-    est_seconds_per_shot: 1455
+    # Measured on the L40: about 1500 s per shot. wan2.2-i2v-a14b measured 1455 s
+    # at 40 steps with offload, about 70 GB host RAM.
+    est_seconds_per_shot: 1500
 
 # Who writes the story: each act's scene, question and choices, then its shot
 # prompts and narration, from the viewer's answers. Any OpenAI-compatible chat
@@ -114,7 +115,7 @@ story:
 # Keyframes for shots with the protagonist when the viewer uploads a photo: an
 # image-edit model redraws the scene with that person in it.
 photo:
-  model: flux1-kontext-dev
+  model: qwen-image-edit-2509-abliterated-nf4
 
 # Audio mixed into the film: a narration voice per shot and a music bed.
 audio:
@@ -288,7 +289,7 @@ models:
   qwen-image-abliterated-nf4:
     weights_gb: 20
     vram_gb: 22  # estimate
-    est_seconds: 40  # guess
+    est_seconds: 19  # measured on the L40
     kind: t2i
     license: Apache-2.0
     permissive: true
@@ -392,9 +393,9 @@ models:
 
   wan2.1-i2v-14b-480p:
     cpu_offload: true
-    weights_gb: 41
-    vram_gb: 30  # estimate, needs cpu_offload
-    est_seconds: 900  # guess
+    weights_gb: 54
+    vram_gb: 36.6  # measured with cpu_offload: 36.6 GB GPU, 54 GB RAM
+    est_seconds: 1500  # measured, 40 steps with offload
     kind: i2v
     license: Apache-2.0
     permissive: true

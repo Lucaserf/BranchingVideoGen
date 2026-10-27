@@ -13,6 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
+from bvg import MODEL_LOAD_LOCK
 from bvg.video import ffmpeg_exe
 
 SAMPLE_RATE = 48000
@@ -48,11 +49,12 @@ class Narrator:
     def speak(self, text: str, voice: str) -> np.ndarray:
         if self.mock or self.backend == "none":
             return self._tones(text)
-        from kokoro import KPipeline
-
         lang = voice[0]
         if lang not in self._pipelines:
-            self._pipelines[lang] = KPipeline(lang_code=lang, device="cpu")
+            with MODEL_LOAD_LOCK:
+                from kokoro import KPipeline
+
+                self._pipelines[lang] = KPipeline(lang_code=lang, device="cpu")
         parts = [np.asarray(r.audio, dtype=np.float32) for r in self._pipelines[lang](text, voice=voice)
                  if r.audio is not None]
         audio = np.concatenate(parts) if parts else np.zeros(0, np.float32)

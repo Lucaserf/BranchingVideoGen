@@ -1,6 +1,8 @@
 from bvg.config import Costs, Profile, load_config, load_profile
 from bvg.planner import Shot, default_shots, finish_after_last_choice, lock_times, plan_film
 
+FAST_MODELS = ["keyframe=flux1-schnell", "standard=ltx-0.9.7-distilled", "hero=wan2.2-i2v-a14b"]
+
 COSTS = Costs(keyframe=2, shot={"pan": 2, "standard": 25, "hero": 120}, finish=60)
 
 
@@ -37,7 +39,10 @@ def test_hero_cap_is_respected_and_priority_goes_first():
 
 
 def test_shipped_profiles_load_and_fit_with_estimates():
-    config = load_config()
+    from bvg.models import apply_overrides
+
+    # The fast models; the shipped defaults (Qwen-Image, Wan 2.1) are too slow for `fast`.
+    config = apply_overrides(load_config(), FAST_MODELS)
     from bvg.config import load_costs
 
     costs = load_costs(config)
