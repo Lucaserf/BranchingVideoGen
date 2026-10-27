@@ -573,6 +573,16 @@ def build(app_state: App) -> FastAPI:
     def logs(after: int = 0):
         return {"lines": app_state.logs.since(after)}
 
+    @api.post("/api/memory/free")
+    def memory_free():
+        """Free every model this server and Ollama hold, when no film is rendering."""
+        if app_state.active():
+            raise HTTPException(409, "a film is being made; memory is freed when it finishes")
+        with app_state.engine.lock:
+            app_state.engine.unload_all()
+        dropped = memory.unload_ollama(app_state.config.get("story", {}).get("base_url"))
+        return {"freed": True, "ollama_unloaded": dropped, "now": app_state.monitor.sample()}
+
     @api.post("/api/memory/forecast")
     def memory_forecast(body: ForecastIn):
         return app_state.forecast_for(body)
@@ -608,7 +618,8 @@ def main() -> None:
     parser.add_argument("--bench", default=None, help="benchmark results JSON with measured costs")
     parser.add_argument("--model", action="append", default=[], metavar="STAGE=MODEL")
     parser.add_argument("--mock", action="store_true", help="placeholder images and pans, no GPU needed")
-    parser.add_argument("--preload", action="store_true", help="load the models at startup instead of on first use")
+    parser.add_argument("--preload", action="store_true",
+                        help="load the image model at startup (it then holds memory before anyone plays)")
     parser.add_argument("--writer", choices=("llm", "simple"), default=None,
                         help="who writes the story (default: story.writer in the config; simple with --mock)")
     parser.add_argument("--host", default="127.0.0.1")
@@ -626,6 +637,7 @@ def main() -> None:
     engine = Engine(config, mock=args.mock)
     # Mock runs use the simple writer unless --writer llm asks for the real one.
     config["story"]["writer"] = args.writer or ("simple" if args.mock else config["story"].get("writer", "llm"))
+    log.info("memory at startup: %s", memory.describe(memory.snapshot(config.get("story", {}).get("base_url"))))
     if args.preload:
         # Only the first model a film needs; with sequential residency a second would replace it.
         engine.preload([stage_settings(config, "keyframe")])

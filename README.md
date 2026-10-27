@@ -15,7 +15,7 @@ A playable end-to-end demo: pick a look, make six choices, and watch the film de
 ```bash
 pip install -e ".[server]"
 python -m bvg.server --mock                          # any machine: placeholder stills and pans
-python -m bvg.server --host 0.0.0.0 --preload        # on the L40, real models
+python -m bvg.server --host 0.0.0.0                  # on the L40, real models, loaded only while a film renders
 ```
 
 Open http://localhost:8000 (on the server, forward the port: `ssh -L 8000:localhost:8000 <server>`). To play without a browser and get a film at the end: `python -m bvg.demo_play --shots 18`.

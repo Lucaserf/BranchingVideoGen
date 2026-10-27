@@ -21,6 +21,7 @@
   button.card, .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; color: var(--text);
     padding: 16px; text-align: left; font: inherit; cursor: pointer; }
   button.card:hover { border-color: var(--accent); }
+  button.link { background: none; border: 0; color: var(--accent); cursor: pointer; font: inherit; padding: 0 4px; }
   .shots-row { gap: 12px; align-items: center; flex-wrap: wrap; }
   #shots { flex: 1; min-width: 160px; accent-color: var(--accent); }
   #shots-n { width: 72px; background: var(--panel); color: var(--text); border: 1px solid var(--line);
@@ -70,7 +71,8 @@
   <div class="eyebrow">A film made only for you</div>
   <h1>Your Film</h1>
   <p class="muted" id="subtitle">Make the choices, and a film made from them renders while you play.</p>
-  <p class="muted" id="memline" style="font-size:13px"></p>
+  <p class="muted" style="font-size:13px"><span id="memline"></span>
+    <button class="link" id="free-mem" title="Unload every model this server and Ollama hold">Free memory</button></p>
 
   <div id="start">
     <section>
@@ -226,6 +228,14 @@ function renderForecast(f) {
   $("begin").disabled = !f.fits && !meta.mock;
 }
 
+$("free-mem").onclick = async () => {
+  try {
+    const r = await api("/api/memory/free", {});
+    $("error").textContent = r.ollama_unloaded.length ? `Freed; Ollama unloaded ${r.ollama_unloaded.join(", ")}.` : "";
+  } catch (e) { $("error").textContent = e.message; }
+  pollMemory();
+};
+
 async function pollMemory() {
   try {
     const m = await api("/api/memory"), n = m.now, parts = [];
@@ -233,6 +243,7 @@ async function pollMemory() {
     if (n.ram) parts.push(`RAM ${(n.ram.total_gb - n.ram.free_gb).toFixed(1)} / ${n.ram.total_gb.toFixed(0)} GB used`);
     parts.push(m.loaded.length ? `loaded: ${m.loaded.map(esc).join(", ")}` : "no model loaded");
     for (const l of n.llm || []) parts.push(`LLM ${esc(l.name)} ${l.size_gb.toFixed(1)} GB`);
+    for (const p of n.gpu_processes || []) parts.push(`${p.this_server ? "this server" : `${esc(p.name)} (pid ${p.pid})`} holds ${p.gb.toFixed(1)} GB of GPU`);
     $("memline").innerHTML = "Server memory: " + parts.join(" · ");
   } catch { /* the server may be restarting */ }
 }

@@ -22,6 +22,7 @@ import ctypes
 import gc
 import json
 import logging
+import os
 import shutil
 import subprocess
 import threading
@@ -77,6 +78,26 @@ def _gpu() -> dict | None:
     return None
 
 
+def _gpu_processes() -> list[dict]:
+    """Every process holding GPU memory (this server, Ollama, anything left over), largest first."""
+    if not shutil.which("nvidia-smi"):
+        return []
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-compute-apps=pid,process_name,used_memory",
+                              "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    procs = []
+    for line in out.strip().splitlines():
+        try:
+            pid, name, used = (x.strip() for x in line.split(","))
+            procs.append({"pid": int(pid), "name": os.path.basename(name), "gb": float(used) / 1024,
+                          "this_server": int(pid) == os.getpid()})
+        except ValueError:
+            continue
+    return sorted(procs, key=lambda p: -p["gb"])
+
+
 def _ollama(base_url: str | None) -> list[dict]:
     """Models Ollama has loaded right now, with how much of each sits on the GPU."""
     if not base_url or "11434" not in base_url:
@@ -97,7 +118,24 @@ def snapshot(llm_url: str | None = None) -> dict:
     if "MemTotal" in info:
         ram = {"total_gb": info["MemTotal"], "free_gb": info.get("MemAvailable", info.get("MemFree", 0)),
                "process_gb": _process_rss()}
-    return {"time": time.time(), "ram": ram, "gpu": _gpu(), "llm": _ollama(llm_url)}
+    return {"time": time.time(), "ram": ram, "gpu": _gpu(), "gpu_processes": _gpu_processes(),
+            "llm": _ollama(llm_url)}
+
+
+def unload_ollama(base_url: str | None) -> list[str]:
+    """Ask Ollama to drop every model it holds. Returns the names it unloaded."""
+    root = (base_url or "").rstrip("/").removesuffix("/v1")
+    names = []
+    for m in _ollama(base_url):
+        try:
+            req = urllib.request.Request(f"{root}/api/generate", method="POST",
+                                         data=json.dumps({"model": m["name"], "keep_alive": 0}).encode(),
+                                         headers={"Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=10).close()
+            names.append(m["name"])
+        except OSError:
+            log.warning("could not unload %s from Ollama", m["name"])
+    return names
 
 
 def release() -> None:
@@ -231,6 +269,10 @@ def describe(snap: dict) -> str:
         parts.append(f"RAM {r['total_gb'] - r['free_gb']:.1f}/{r['total_gb']:.0f} GB used")
     for m in snap.get("llm") or []:
         parts.append(f"LLM {m['name']} {m['size_gb']:.1f} GB ({m['vram_gb']:.1f} on GPU)")
+    others = [p for p in snap.get("gpu_processes") or [] if not p["this_server"]]
+    if others:
+        parts.append("other GPU processes: " + ", ".join(f"{p['name']} (pid {p['pid']}) {p['gb']:.1f} GB"
+                                                        for p in others))
     return ", ".join(parts) or "no memory information"
 
 
