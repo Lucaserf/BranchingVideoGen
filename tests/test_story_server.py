@@ -122,6 +122,7 @@ def _client(tmp_path):
     config["film"]["shot_seconds"] = 1
     config["server"]["outputs"] = str(tmp_path)
     config["audio"]["music_dir"] = str(tmp_path / "no-music")
+    config["story"]["writer"] = "simple"
     return TestClient(build(App(config, Engine(config, mock=True), None)))
 
 
@@ -180,12 +181,14 @@ def test_film_with_photo_voice_music_and_model_picks(tmp_path):
     photo = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
 
     body = {"length": "short", "photo": photo, "voice": "af_heart", "music": True,
-            "models": {"standard": "wan2.2-ti2v-5b", "photo": "qwen-image-edit-2509"}}
+            "models": {"standard": "wan2.2-ti2v-5b", "photo": "qwen-image-edit-2509-abliterated",
+                       "story": "qwen3.6-35b-a3b-abliterated"}}
     assert client.post("/api/sessions", json=body).status_code == 400  # photo without consent
     assert client.post("/api/sessions", json={**body, "photo_consent": True,
                                               "models": {"standard": "flux1-schnell"}}).status_code == 400  # wrong kind
     state = client.post("/api/sessions", json={**body, "photo_consent": True}).json()
     assert state["models"]["standard"] == "wan2.2-ti2v-5b" and state["photo"]
+    assert state["models"]["story"] == "qwen3.6-35b-a3b-abliterated"
     for act in range(6):
         assert _answer(client, state["id"], {"option": 1}).status_code == 200
     state = _wait(client, state["id"])
@@ -207,3 +210,21 @@ def test_mix_ducks_music_under_narration():
     assert quiet == pytest.approx(0.25, abs=0.01)  # music alone
     assert speaking > quiet  # narration on top, music ducked
     assert len(audio.synth_pad(5)) == 5 * audio.SAMPLE_RATE
+
+
+def test_story_model_comes_from_the_catalog(fake_llm):
+    from bvg.config import load_config
+    from bvg.models import select_model, stage_settings
+    from bvg.writer import make_writer
+
+    config = load_config()
+    select_model(config, "story", "qwen3.8-27b-abliterated")
+    settings = stage_settings(config, "story")
+    writer = make_writer({**settings, **fake_llm})
+    assert writer.primary.model == "huihui_ai/Qwen3.8-abliterated:27b"
+    with pytest.raises(ValueError):
+        select_model(config, "story", "flux1-schnell")
+        stage_settings(config, "story")
+    qwen = make_writer({**stage_settings(load_config(), "story"), **fake_llm}).primary
+    qwen.opening(StoryState("anime"))
+    assert _FakeLLM.calls[-1].endswith(" /no_think")

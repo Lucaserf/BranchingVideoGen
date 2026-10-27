@@ -147,7 +147,7 @@ const $ = (id) => document.getElementById(id);
 const esc = (t) => String(t).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 let meta = null, session = null, pick = { style: "animated", length: "full", profile: "fast" }, pollTimer = null;
 let photo = null;
-const STAGES = [["keyframe", "t2i", "Image model (stills)"], ["standard", "i2v", "Video model"],
+const STAGES = [["story", "llm", "Story writer (LLM)"], ["keyframe", "t2i", "Image model (stills)"], ["standard", "i2v", "Video model"],
                 ["hero", "i2v", "Quality shots model"], ["photo", "edit", "Photo model (your face in the scene)"]];
 
 const store = {
@@ -193,7 +193,8 @@ async function init() {
   $("models").innerHTML = STAGES.map(([stage, kind, label]) => `
     <label class="field"><span>${label}</span><select data-stage="${stage}">${(meta.models[kind] || []).map((m) => `
       <option value="${m.name}" ${m.name === meta.default_models[stage] ? "selected" : ""}>${esc(m.name)}${
-        m.est_seconds ? ` · ~${m.est_seconds} s` : ""}${m.permissive ? "" : " · restricted license"}</option>`).join("")}
+        m.est_seconds ? ` · ~${m.est_seconds} s` : ""}${m.vram_gb ? ` · ~${m.vram_gb} GB` : ""}${
+        m.uncensored ? " · uncensored" : ""}${m.permissive ? "" : " · restricted license"}</option>`).join("")}
     </select></label>`).join("");
   if (meta.busy) $("busy").textContent = `Someone else is making a film right now (about ${minutes(meta.eta_seconds)} left).`;
   const saved = store.get();
@@ -310,7 +311,7 @@ function render() {
       <div class="card values"><strong>Your fingerprint</strong>${Object.entries(s.values).map(([k, v]) => `
         <div><span class="muted">${k}</span><div class="bar"><div style="width:${100 * Math.max(0, v) / max}%"></div></div><span>${v}</span></div>`).join("")}
         <p class="muted">Style: ${meta.styles[s.style]} · ${s.length} · ${s.profile}<br>
-          Story written by: ${s.writer === "llm" ? "the LLM" : s.writer === "fallback" ? "the LLM, with placeholder text where it failed" : "placeholder writer (no LLM)"}<br>
+          Story written by: ${s.writer === "llm" ? `the LLM (${esc(s.models.story)})` : s.writer === "fallback" ? `the LLM (${esc(s.models.story)}), with placeholder text where it failed` : "placeholder writer (no LLM)"}<br>
           Models: ${esc(s.models.keyframe)}, ${esc(s.models.standard)}${s.photo ? `, ${esc(s.models.photo)} (your photo)` : ""}<br>
           Sound: ${s.voice ? esc(meta.voices[s.voice] || s.voice) : "no narration"}${s.music ? ", music" : ""}</p>
         <button class="primary" onclick="store.set(null); location.reload()">Make another</button></div>`;

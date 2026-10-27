@@ -18,7 +18,14 @@ def _load_pipeline(settings: dict):
 
     pipeline_cls = getattr(diffusers, settings["pipeline"])
     dtype = getattr(torch, settings.get("dtype", "bfloat16"))
-    pipe = pipeline_cls.from_pretrained(settings["model_id"], torch_dtype=dtype)
+    components = {}
+    encoder = settings.get("text_encoder")
+    if encoder:  # e.g. an abliterated copy of the model's own text encoder
+        import transformers
+
+        encoder_cls = getattr(transformers, encoder.get("class", "AutoModel"))
+        components["text_encoder"] = encoder_cls.from_pretrained(encoder["model_id"], torch_dtype=dtype)
+    pipe = pipeline_cls.from_pretrained(settings["model_id"], torch_dtype=dtype, **components)
 
     lora = settings.get("lora")
     if lora:

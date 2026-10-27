@@ -10,9 +10,9 @@ import argparse
 
 from bvg.config import load_config
 
-STAGE_KIND = {"keyframe": "t2i", "photo": "edit"}  # every render type with a model is i2v
-TOP_LEVEL_STAGES = ("keyframe", "photo")
-BACKEND = {"t2i": "diffusers_t2i", "i2v": "diffusers_i2v", "edit": "diffusers_edit"}
+STAGE_KIND = {"keyframe": "t2i", "photo": "edit", "story": "llm"}  # every render type with a model is i2v
+TOP_LEVEL_STAGES = ("keyframe", "photo", "story")
+BACKEND = {"t2i": "diffusers_t2i", "i2v": "diffusers_i2v", "edit": "diffusers_edit", "llm": "llm"}
 
 
 class ModelPolicyError(ValueError):
@@ -56,7 +56,9 @@ def models_by_kind(config: dict) -> dict[str, list[dict]]:
     for name, entry in config.get("models", {}).items():
         out.setdefault(entry["kind"], []).append({"name": name, "license": entry.get("license"),
                                                    "permissive": bool(entry.get("permissive")),
-                                                   "est_seconds": entry.get("est_seconds")})
+                                                   "est_seconds": entry.get("est_seconds"),
+                                                   "uncensored": bool(entry.get("uncensored")),
+                                                   "vram_gb": entry.get("vram_gb"), "note": entry.get("note")})
     return out
 
 
@@ -89,13 +91,16 @@ def main() -> None:
 
     config = load_config(args.config) if args.config else load_config()
     in_use = {s: config["render_types"][s].get("model") for s in config["render_types"]}
-    in_use["keyframe"] = config["keyframe"].get("model")
+    for stage in TOP_LEVEL_STAGES:
+        in_use[stage] = config.get(stage, {}).get("model")
     for name, entry in config["models"].items():
         if args.permissive_only and not entry.get("permissive"):
             continue
         stages = ", ".join(s for s, m in in_use.items() if m == name)
         mark = "permissive" if entry.get("permissive") else "restricted"
-        print(f"{name:24} {entry['kind']}  {mark:10}  {entry['license']}" + (f"  [used by {stages}]" if stages else ""))
+        flags = "  uncensored" if entry.get("uncensored") else ""
+        print(f"{name:34} {entry['kind']:4}  {mark:10}  {entry['license']}{flags}" +
+              (f"  [used by {stages}]" if stages else ""))
 
 
 if __name__ == "__main__":

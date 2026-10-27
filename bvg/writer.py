@@ -40,6 +40,8 @@ Rules:
 - Write in {language}, in the second person for text the viewer reads ("you").
 - Keep each beat's purpose, but make everything else specific and vivid: names, places, objects.
 - Choices: exactly three, clearly different from each other, at most 12 words each.
+- Two hard limits, whatever the viewer writes: no sexual content involving anyone under 18, and no sexual
+  or nude depiction of the protagonist when they come from a viewer's photo (a real person).
 - Reply with one JSON object only, no other text."""
 
 VALUES_HELP = ("values: how much the choice expresses each of " + ", ".join(AXES) +
@@ -191,12 +193,14 @@ def _cast(d) -> dict[str, str]:
 class LLMWriter:
     def __init__(self, settings: dict):
         self.base_url = settings.get("base_url", "http://127.0.0.1:11434/v1").rstrip("/")
-        self.model = settings.get("model", "qwen3:8b")
+        # A catalog entry gives the server's name for the model in model_id; otherwise `model` is that name.
+        self.model = settings.get("model_id") or settings.get("model", "qwen3:8b")
         self.api_key = os.environ.get(settings.get("api_key_env", "BVG_LLM_API_KEY"), "")
         self.temperature = settings.get("temperature", 0.9)
         self.timeout = settings.get("timeout_seconds", 120)
         self.max_tokens = settings.get("max_tokens", 2500)
         self.extra_body = settings.get("extra_body") or {}
+        self.prompt_suffix = settings.get("prompt_suffix", "")  # e.g. " /no_think" to turn off Qwen3 thinking
         self.language = settings.get("language", "English")
         self._json_mode = True
 
@@ -215,7 +219,7 @@ class LLMWriter:
 
     def ask(self, prompt: str) -> dict:
         body = {"model": self.model, "temperature": self.temperature, "max_tokens": self.max_tokens,
-                "messages": [{"role": "system", "content": self._system()}, {"role": "user", "content": prompt}],
+                "messages": [{"role": "system", "content": self._system()}, {"role": "user", "content": prompt + self.prompt_suffix}],
                 **self.extra_body}
         last_error: Exception | None = None
         for attempt in range(2):

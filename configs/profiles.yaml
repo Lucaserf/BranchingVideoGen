@@ -75,10 +75,11 @@ render_types:
 # endpoint works: Ollama (http://127.0.0.1:11434/v1), vLLM, llama.cpp server, or a
 # hosted API (key in the env var named by api_key_env). If a call fails, the simple
 # writer (plain placeholder text, no model) fills in so the film still finishes.
+# `model` is an llm entry of the catalog below; the app lets the viewer pick another.
 story:
   writer: llm                 # llm or simple
   base_url: http://127.0.0.1:11434/v1
-  model: qwen3:8b
+  model: qwen3-8b-abliterated
   api_key_env: BVG_LLM_API_KEY
   language: English
   temperature: 0.9
@@ -122,6 +123,68 @@ profiles:
 # license allows commercial use with no field-of-use, revenue or territory limits.
 # License notes are a summary; check the model card before shipping.
 models:
+  # --- story writers (LLM) ---
+  # model_id is the name on the LLM server (here Ollama: `ollama pull <model_id>`).
+  # vram_gb is the Q4 download size, about what the model takes in GPU memory.
+  # The video models peak at 32-38 GB, so on the 48 GB L40 only the small writers
+  # fit on the GPU next to them; the larger ones need GPU room or run on the CPU.
+  # Abliterated models have the refusal direction removed from their weights, so
+  # they write what the story asks for instead of refusing (marked uncensored).
+  qwen3-8b-abliterated:
+    kind: llm
+    license: Apache-2.0
+    permissive: true
+    uncensored: true
+    model_id: huihui_ai/qwen3-abliterated:8b
+    vram_gb: 5
+    prompt_suffix: " /no_think"
+    note: fits on the GPU next to the video models
+
+  gemma4-12b-abliterated:
+    kind: llm
+    license: Gemma
+    permissive: false
+    uncensored: true
+    model_id: huihui_ai/gemma-4-abliterated:12b
+    vram_gb: 9  # estimate, size not listed
+    note: better prose, tight next to the video models
+
+  qwen3.6-35b-a3b-abliterated:
+    kind: llm
+    license: Apache-2.0
+    permissive: true
+    uncensored: true
+    model_id: huihui_ai/Qwen3.6-abliterated:35b
+    vram_gb: 22
+    note: mixture of experts (3B active), fast enough on the CPU
+
+  gemma4-26b-a4b-abliterated:
+    kind: llm
+    license: Gemma
+    permissive: false
+    uncensored: true
+    model_id: huihui_ai/gemma-4-abliterated:26b
+    vram_gb: 18
+    note: mixture of experts (4B active), fast enough on the CPU
+
+  qwen3.8-27b-abliterated:
+    kind: llm
+    license: Apache-2.0
+    permissive: true
+    uncensored: true
+    model_id: huihui_ai/Qwen3.8-abliterated:27b
+    vram_gb: 18
+    note: the strongest writer here; dense, so it needs GPU room
+
+  qwen3-8b:
+    kind: llm
+    license: Apache-2.0
+    permissive: true
+    model_id: qwen3:8b
+    vram_gb: 5
+    prompt_suffix: " /no_think"
+    note: the stock model, for comparison
+
   # --- keyframes (text to image) ---
   flux1-schnell:
     est_seconds: 1.3  # measured
@@ -145,6 +208,28 @@ models:
     permissive: true
     pipeline: QwenImagePipeline
     model_id: Qwen/Qwen-Image
+    dtype: bfloat16
+    width: 832
+    height: 480
+    steps: 30
+    guidance: 4.0
+    guidance_arg: true_cfg_scale
+    extra_kwargs:
+      negative_prompt: " "
+
+  # Qwen-Image with an abliterated copy of its text encoder (Qwen2.5-VL 7B), so
+  # prompts are not softened before they reach the image model.
+  qwen-image-abliterated:
+    est_seconds: 25  # guess
+    kind: t2i
+    license: Apache-2.0
+    permissive: true
+    uncensored: true
+    pipeline: QwenImagePipeline
+    model_id: Qwen/Qwen-Image
+    text_encoder:
+      class: Qwen2_5_VLForConditionalGeneration
+      model_id: huihui-ai/Qwen2.5-VL-7B-Instruct-abliterated
     dtype: bfloat16
     width: 832
     height: 480
@@ -278,6 +363,27 @@ models:
     permissive: true
     pipeline: QwenImageEditPlusPipeline
     model_id: Qwen/Qwen-Image-Edit-2509
+    dtype: bfloat16
+    width: 768
+    height: 512
+    steps: 40
+    guidance: 4.0
+    guidance_arg: true_cfg_scale
+    extra_kwargs:
+      negative_prompt: " "
+
+  # The same edit model with the abliterated text encoder.
+  qwen-image-edit-2509-abliterated:
+    est_seconds: 60  # guess
+    kind: edit
+    license: Apache-2.0
+    permissive: true
+    uncensored: true
+    pipeline: QwenImageEditPlusPipeline
+    model_id: Qwen/Qwen-Image-Edit-2509
+    text_encoder:
+      class: Qwen2_5_VLForConditionalGeneration
+      model_id: huihui-ai/Qwen2.5-VL-7B-Instruct-abliterated
     dtype: bfloat16
     width: 768
     height: 512

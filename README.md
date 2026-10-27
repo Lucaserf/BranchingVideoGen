@@ -108,7 +108,20 @@ models:
     # ...same fields as the base model it was trained from
 ```
 
-Since viewers type free text into the story, the story layer (not yet built) should still block a small set of things no model choice changes: sexual content involving minors and realistic depictions of real, identifiable people.
+The story writer can be abliterated too: these LLMs have the "refusal direction" removed from their weights, so they write dark or violent turns the viewer asks for instead of refusing. The catalog has the strongest ones that run on the L40 (from [huihui_ai on Ollama](https://ollama.com/huihui_ai)); pick one per film in the app or set `story.model`:
+
+| Model | Size | Notes |
+| --- | --- | --- |
+| `qwen3-8b-abliterated` (default) | ~5 GB | Fits on the GPU next to the video models |
+| `gemma4-12b-abliterated` | ~9 GB | Better prose, tight next to the video models |
+| `qwen3.6-35b-a3b-abliterated` | ~22 GB | Mixture of experts, 3B active: usable on the CPU |
+| `gemma4-26b-a4b-abliterated` | ~18 GB | Mixture of experts, 4B active: usable on the CPU |
+| `qwen3.8-27b-abliterated` | ~18 GB | The strongest writer here; dense, so it needs GPU room |
+| `qwen3-8b` | ~5 GB | The stock model, for comparison |
+
+For images, `qwen-image-abliterated` and `qwen-image-edit-2509-abliterated` are Qwen-Image and Qwen-Image-Edit with an abliterated copy of their text encoder (Qwen2.5-VL 7B), set through the entry's `text_encoder` key. FLUX and the video models use T5 text encoders, which are not refusal-tuned, so there is nothing to abliterate there.
+
+Two limits stay whatever the model: the writer's instructions forbid sexual content involving minors and sexual or nude depictions of a viewer's uploaded photo. With an abliterated writer that instruction is the only guard, so add a classifier on prompts before opening the app to the public.
 
 ## Running the benchmark on the L40
 

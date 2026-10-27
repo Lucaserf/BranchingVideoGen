@@ -46,7 +46,8 @@ from PIL import Image
 from bvg import audio
 from bvg.config import Costs, load_config, load_costs, load_profile
 from bvg.engine import Engine
-from bvg.models import ModelPolicyError, apply_overrides, models_by_kind, select_model, stage_settings
+from bvg.models import (TOP_LEVEL_STAGES, ModelPolicyError, apply_overrides, models_by_kind, select_model,
+                        stage_settings)
 from bvg.planner import Shot, plan_film
 from bvg.story import BEATS, STYLES, StoryState, beats_public
 from bvg.writer import make_writer
@@ -57,7 +58,7 @@ STATIC = Path(__file__).resolve().parent / "static"
 # Shots per act for each film length.
 LENGTHS = {"full": 6, "short": 3}
 KEYFRAME, VIDEO, FINISH = 0, 1, 2  # job priorities: lower runs first
-MODEL_STAGES = ("keyframe", "standard", "hero", "photo")
+MODEL_STAGES = ("keyframe", "standard", "hero", "photo", "story")
 MAX_PHOTO_BYTES = 12 * 1024 * 1024
 
 
@@ -93,7 +94,8 @@ class Session:
     last_choice_at: float | None = None
     film_status: str = "waiting"  # waiting -> stitching -> done | failed
     film_ready_at: float | None = None
-    writer_steps: list[str] = field(default_factory=list)  # "llm" or "fallback", per writer call
+    writer: object = None  # this film's story writer (bvg.writer)
+    writer_steps: list[str] = field(default_factory=list)  # "llm", "fallback" or "simple", per writer call
     error: str | None = None
 
     @property
@@ -122,7 +124,7 @@ class App:
     def __init__(self, config: dict, engine: Engine, bench: str | None, writer=None):
         self.config = config
         self.engine = engine
-        self.writer = writer or make_writer(config.get("story", {}), mock=engine.mock)
+        self.writer = writer  # a fixed writer for every film (tests); otherwise one per film from story settings
         self.writer_jobs: queue.Queue = queue.Queue()
         self.bench = bench
         self.costs = load_costs(config, bench)
@@ -174,7 +176,8 @@ class App:
             session = Session(id=sid, story=story, profile=body.profile, length=body.length,
                               shots={(s.act, s.index): ShotState(s.act, s.index, s.render_type) for s in plan.shots},
                               dir=self.outputs / sid, settings=settings, costs=costs, voice=voice,
-                              music=body.music, captions=body.captions, photo=photo)
+                              music=body.music, captions=body.captions, photo=photo,
+                              writer=self.writer or make_writer(settings["story"]))
             session.dir.mkdir(parents=True, exist_ok=True)
             if photo is not None:
                 photo.save(session.dir / "photo.png")
@@ -250,7 +253,7 @@ class App:
             session = self.sessions[sid]
             try:
                 if answered < 0:
-                    session.writer_steps.append(self.writer.opening(session.story) or "llm")
+                    session.writer_steps.append(session.writer.opening(session.story) or "llm")
                 else:
                     self._write_act(session, answered)
             except Exception as e:
@@ -261,8 +264,8 @@ class App:
 
     def _write_act(self, session: Session, act: int) -> None:
         """After an answer: write the next act (the viewer is waiting), then this act's shots (the GPU is)."""
-        session.writer_steps.append(self.writer.next_act(session.story, act) or "llm")
-        session.writer_steps.append(self.writer.shots(session.story, act) or "llm")
+        session.writer_steps.append(session.writer.next_act(session.story, act) or "llm")
+        session.writer_steps.append(session.writer.shots(session.story, act) or "llm")
         for spec in session.story.prompts(act):
             shot = session.shots[(act, spec["index"])]
             shot.prompt, shot.narration, shot.status = spec["prompt"], spec["narration"], "queued"
@@ -402,7 +405,7 @@ def build(app_state: App) -> FastAPI:
     def meta():
         busy = app_state.active()
         config = app_state.config
-        defaults = {stage: (config.get(stage) if stage in ("keyframe", "photo") else config["render_types"][stage])
+        defaults = {stage: (config.get(stage) if stage in TOP_LEVEL_STAGES else config["render_types"][stage])
                     .get("model") for stage in MODEL_STAGES}
         narration = app_state.audio.get("narration", "kokoro")
         narration_ok = app_state.engine.mock or (narration != "none" and importlib.util.find_spec("kokoro") is not None)
@@ -456,15 +459,13 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     config = apply_overrides(load_config(args.config) if args.config else load_config(), args.model)
     engine = Engine(config, mock=args.mock)
-    story_settings = dict(config.get("story", {}))
-    if args.writer:
-        story_settings["writer"] = args.writer
-    writer = make_writer(story_settings, mock=args.mock and args.writer != "llm")
+    # Mock runs use the simple writer unless --writer llm asks for the real one.
+    config["story"]["writer"] = args.writer or ("simple" if args.mock else config["story"].get("writer", "llm"))
     if args.preload:
         engine.preload([stage_settings(config, "keyframe"), stage_settings(config, "standard")])
     import uvicorn
 
-    uvicorn.run(build(App(config, engine, args.bench, writer)), host=args.host, port=args.port)
+    uvicorn.run(build(App(config, engine, args.bench)), host=args.host, port=args.port)
 
 
 if __name__ == "__main__":

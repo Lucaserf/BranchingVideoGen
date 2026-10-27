@@ -36,7 +36,10 @@ def test_wrong_kind_is_rejected():
 
 def test_every_catalog_entry_is_complete():
     for name, entry in load_config()["models"].items():
-        for key in ("kind", "license", "permissive", "pipeline", "model_id", "width", "height", "steps", "guidance"):
+        assert {"kind", "license", "permissive", "model_id"} <= entry.keys(), name
+        if entry["kind"] == "llm":
+            continue
+        for key in ("pipeline", "width", "height", "steps", "guidance"):
             assert key in entry, (name, key)
         if entry["kind"] == "i2v":
             assert {"fps", "frame_multiple", "call_style"} <= entry.keys(), name
